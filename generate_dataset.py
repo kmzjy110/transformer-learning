@@ -2,7 +2,7 @@ import numpy as np
 import json
 numbers = list(range(1,27))
 letters = ['A', 'B', 'C','D', 'E','F','G','H','I','J','K','L','M','N','O','P','Q','R','S','T','U','V','W','X','Y','Z']
-def generate_dataset(dataset_len = 5000):
+def generate_dataset(dataset_len = 5000, distribution_threshold=0.5):
     data = []
     num_integer_datapoints = 0
     num_decimal_datapoints = 0
@@ -38,7 +38,7 @@ def generate_dataset(dataset_len = 5000):
 
         if sol_num_index_in_sorted == len(generated_numbers_sorted)-1 and sol_num!=26:
             higher_closest_integers.extend(range(sol_num, 27))
-        if np.random.uniform()<0.5:
+        if np.random.uniform()<=distribution_threshold:
             num_decimal_datapoints +=1
             if np.random.uniform() <0.5:
                 prompt = sol_num-0.1
