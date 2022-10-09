@@ -11,6 +11,7 @@ import random
 import pickle as pkl
 import math
 from torch import Tensor
+from argparse import ArgumentParser
  
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -20,7 +21,7 @@ NUMBERs = list(range(1,27))
 LETTERs = ['A', 'B', 'C','D', 'E','F','G','H','I','J','K','L','M','N','O','P','Q','R','S','T','U','V','W','X','Y','Z']
 eps = 0.2
 # currently using different embeddings for different tokens
-number_symbolic_rep = True
+number_symbolic_rep = False
 
 def generate_dataset(dataset_len = 5000, num_numbers=26, num_letters=26, save_path=None, seed=None):
     assert 2 <= num_numbers <= 26
@@ -310,6 +311,8 @@ class Experiment:
             if step_idx % eval_every == 0:
                 acc = self.evaluate()
                 accs.append(acc)
+                if acc > 0.99:
+                    break
                 pkl.dump(accs, open(f'experiment_log/{self.experiment_name}_accs.pkl', 'wb'))
                 print(self.experiment_name, f'Step {step_idx}: accuracy: {acc:.3f}')
                 self.model.train()
@@ -331,5 +334,16 @@ class Experiment:
 
 
 if __name__ == '__main__':
-    experiment = Experiment(embedding_dim=512, num_heads=8, num_layers=4, num_numbers=6, num_letters=6, num_warump_steps=5000, num_test_data=1000)
-    experiment.train(steps=1000000, batch_size=64)
+    parser = ArgumentParser()
+    parser.add_argument('--embedding_dim', type=int, default=128)
+    parser.add_argument('--num_heads', type=int, default=4)
+    parser.add_argument('--num_layers', type=int, default=2)
+    parser.add_argument('--num_numbers', type=int, default=26)
+    parser.add_argument('--num_letters', type=int, default=26)
+    parser.add_argument('--num_training_data', type=int, default=5000)
+    parser.add_argument('--num_steps', type=int, default=1000000)
+
+    args = parser.parse_args()
+
+    experiment = Experiment(embedding_dim=args.embedding_dim, num_heads=args.num_heads, num_layers=args.num_layers, num_numbers=args.num_numbers, num_letters=args.num_letters, num_training_data=args.num_training_data)
+    experiment.train(steps=args.num_steps, batch_size=32)
