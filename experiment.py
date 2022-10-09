@@ -1,4 +1,3 @@
-from random import random
 from generate_dataset import generate_dataset
 from collections import namedtuple
 import numpy as np
@@ -8,6 +7,10 @@ import torch.nn as nn
 from torch.optim import AdamW
 import tqdm
 from transformers import get_linear_schedule_with_warmup
+import random
+import pickle as pkl
+import math
+from torch import Tensor
  
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -15,12 +18,18 @@ device = 'cuda' if torch.cuda.is_available() else 'cpu'
 TokenInfo = namedtuple('TokenInfo', ['idx', 'multiplier'])
 NUMBERs = list(range(1,27))
 LETTERs = ['A', 'B', 'C','D', 'E','F','G','H','I','J','K','L','M','N','O','P','Q','R','S','T','U','V','W','X','Y','Z']
+eps = 0.2
+# currently using different embeddings for different tokens
+number_symbolic_rep = True
 
-def generate_dataset_(dataset_len = 5000, num_numbers=26, num_letters=26, save_path=None):
+def generate_dataset(dataset_len = 5000, num_numbers=26, num_letters=26, save_path=None, seed=None):
     assert 2 <= num_numbers <= 26
     assert 2 <= num_letters <= 26
     numbers = NUMBERs[:num_numbers]
     letters = LETTERs[:num_letters]
+
+    if seed is not None:
+        np.random.seed(seed)
 
     data = []
     for _ in range(dataset_len):
@@ -37,7 +46,7 @@ def generate_dataset_(dataset_len = 5000, num_numbers=26, num_letters=26, save_p
 
         target_idx = np.random.randint(0, num_incontext_examples - 1)
         sol_letter = generated_letters[target_idx]
-        prompt = generated_numbers[target_idx] + 0.2 - np.random.rand() * 0.4
+        prompt = generated_numbers[target_idx] + eps - np.random.rand() * 2 * eps
         input_seq.append(prompt)
         input_seq.append('[EOS]')
 
@@ -50,8 +59,9 @@ def generate_dataset_(dataset_len = 5000, num_numbers=26, num_letters=26, save_p
 
     return data
 
-
-def generate_dataset(dataset_len = 5000, num_numbers=26, num_letters=26, save_path=None):
+# only returns the maximal character from a sequence
+# turns out that you need to tune the learning rate really carefully
+def generate_dataset_(dataset_len = 5000, num_numbers=26, num_letters=26, save_path=None):
     assert 2 <= num_numbers <= 26
     assert 2 <= num_letters <= 26
     letters = LETTERs[:num_letters]
@@ -81,8 +91,9 @@ def generate_dataset(dataset_len = 5000, num_numbers=26, num_letters=26, save_pa
 
 class Tokenizer:
 
-    def __init__(self, num_letters):
+    def __init__(self, num_numbers, num_letters):
         self.num_letters = num_letters
+        self.num_numbers = num_numbers
         self.table = {}
         counter = 0
 
@@ -99,8 +110,12 @@ class Tokenizer:
             self.table[c] = counter
             counter += 1
             self.label_table[c] = i
-    
-    def map_token(self, token):
+        
+        for i, n in enumerate(NUMBERs[:num_numbers]):
+            self.table[n] = counter
+            counter += 1
+        
+    def continuous_map_token(self, token):
         if type(token) == float or type(token) == int:
             return TokenInfo(self.table['constant'], float(token))
         elif type(token) == str:
@@ -110,7 +125,21 @@ class Tokenizer:
                 return TokenInfo(self.table[token], 1.0)
         else:
             raise ValueError(f'Invalid token type: {type(token)}')
-    
+        
+    def symbolic_map_token(self, token):
+        if type(token) == float:
+            token = int(token + eps)
+        if token == '[PAD]':
+            return TokenInfo(self.table['[PAD]'], 0)
+        else:
+            return TokenInfo(self.table[token], 1.0)
+
+    def map_token(self, token):
+        if number_symbolic_rep:
+            return self.symbolic_map_token(token)
+        else:
+            return self.continuous_map_token(token)
+
     def map_label(self, label):
         return self.label_table[label]
 
@@ -148,11 +177,29 @@ def tokenize_batch(batch, tokenizer, return_tensors='pt'):
         d = {k: torch.tensor(v).to(device) for k, v in d.items()}
     return d
 
+class PositionalEncoding(nn.Module):
+
+    def __init__(self, d_model: int, dropout: float = 0.1, max_len: int = 5000):
+        super().__init__()
+        self.dropout = nn.Dropout(p=dropout)
+
+        position = torch.arange(max_len).unsqueeze(1)
+        div_term = torch.exp(torch.arange(0, d_model, 2) * (-math.log(10000.0) / d_model))
+        pe = torch.zeros(1, max_len, d_model)
+        pe[0, :, 0::2] = torch.sin(position * div_term)
+        pe[0, :, 1::2] = torch.cos(position * div_term)
+        self.register_buffer('pe', pe)
+
+    def forward(self, x: Tensor) -> Tensor:
+        x = x + self.pe[:, :x.size(1)]
+        return self.dropout(x)
+
 class SimpleTransformer(nn.Module):
     def __init__(self, embedding_len, num_labels, embedding_dim, num_heads, num_layers, seed=0):
         super().__init__()
         torch.manual_seed(seed)
         np.random.seed(seed)
+        random.seed(seed)
 
         self.padding_idx = 0
 
@@ -164,6 +211,7 @@ class SimpleTransformer(nn.Module):
         self.linear_layer = nn.Linear(embedding_dim, num_labels)
         self.logsoftmax = nn.LogSoftmax(dim=1)
         self.loss_func = nn.NLLLoss()
+        self.pe = PositionalEncoding(embedding_dim)
         self.to(device)
 
     def forward(self, tokenized_batch):
@@ -174,6 +222,7 @@ class SimpleTransformer(nn.Module):
         multipliers = multipliers.to(device)
 
         x = self.embedding_layer(sequences)
+        x = self.pe(x)
         multipliers = multipliers.unsqueeze(-1).repeat(1,1,self.embedding_dim)
         x = x * multipliers
         x = self.transformer_encoder(x, src_key_padding_mask=src_key_padding_mask)
@@ -191,26 +240,34 @@ class Experiment:
 
     def __init__(
         self, embedding_dim, num_heads, num_layers, num_numbers, 
-        num_letters, num_test_data=500, num_warump_steps=5000):
+        num_letters, num_test_data=2000, num_training_data=None, num_warump_steps=5000):
+        self.experiment_name = f'exp_num_letters={num_letters}_num_numbers={num_numbers}_embedding_dim={embedding_dim}_num_heads={num_heads}_num_layers={num_layers}_num_training_data={num_training_data}'
         self.num_numbers, self.num_letters, self.num_test_data = num_numbers, num_letters, num_test_data
         self.test_data = generate_dataset(num_test_data, num_numbers, num_letters)
         self.forbidden_input_seqs = set(str(d['input_seq']) for d in self.test_data)
 
-        self.tokenizer = Tokenizer(num_letters)
+        self.tokenizer = Tokenizer(num_numbers, num_letters)
         self.embedding_dim = embedding_dim
         self.model = SimpleTransformer(len(self.tokenizer.table), num_letters, embedding_dim, num_heads, num_layers).to(device)
         self.num_warump_steps = num_warump_steps
+        self.num_training_data = num_training_data
 
     def get_batches(self, batch_size):
-        data_batch = generate_dataset(batch_size, self.num_numbers, self.num_letters)
+        np_seed = None
+        if self.num_training_data is not None:
+            np_seed = random.randint(0, self.num_training_data // batch_size)
+            
+        data_batch = generate_dataset(batch_size, self.num_numbers, self.num_letters, seed=np_seed)
         data_batch = [d for d in data_batch if str(d['input_seq']) not in self.forbidden_input_seqs]
         return tokenize_batch(data_batch, self.tokenizer)
 
     def train(self, steps, batch_size, eval_every=500):
         print('Training...')
         self.optimizer = AdamW(self.model.parameters(), lr=3e-5)
-        self.lr_scheduler = get_linear_schedule_with_warmup(self.optimizer, num_warmup_steps=1000, num_training_steps=steps)
+        self.lr_scheduler = get_linear_schedule_with_warmup(self.optimizer, num_warmup_steps=self.num_warump_steps, num_training_steps=steps)
         pbar = tqdm.trange(steps)
+        loss_moving_avg = 0
+        accs = []
         for step_idx in pbar:
             batch = self.get_batches(batch_size)
             loss = self.model.calculate_loss(batch)
@@ -218,10 +275,16 @@ class Experiment:
             self.optimizer.step()
             self.lr_scheduler.step()
             self.optimizer.zero_grad()
-            pbar.set_description(f'loss: {loss.item():.3f}')
+            if step_idx == 0:
+                loss_moving_avg = loss.item()
+            else:
+                loss_moving_avg = 0.99 * loss_moving_avg + 0.01 * loss.item()
+            pbar.set_description(f'loss: {loss_moving_avg:.3f}')
             if step_idx % eval_every == 0:
                 acc = self.evaluate()
-                print(f'Step {step_idx}: accuracy: {acc:.3f}')
+                accs.append(acc)
+                pkl.dump(accs, open(f'experiment_log/{self.experiment_name}_accs.pkl', 'wb'))
+                print(self.experiment_name, f'Step {step_idx}: accuracy: {acc:.3f}')
                 self.model.train()
 
     def evaluate(self):
@@ -241,10 +304,5 @@ class Experiment:
 
 
 if __name__ == '__main__':
-    experiment = Experiment(embedding_dim=256, num_heads=8, num_layers=4, num_numbers=6, num_letters=26, num_warump_steps=5000, num_test_data=2000)
-    experiment.train(steps=100000, batch_size=64)
-
-
-
-        
-        
+    experiment = Experiment(embedding_dim=512, num_heads=8, num_layers=4, num_numbers=6, num_letters=6, num_warump_steps=5000, num_test_data=1000)
+    experiment.train(steps=1000000, batch_size=64)
