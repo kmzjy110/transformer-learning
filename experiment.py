@@ -61,6 +61,7 @@ def generate_dataset(dataset_len = 5000, num_numbers=26, num_letters=26, save_pa
 
 # only returns the maximal character from a sequence
 # turns out that you need to tune the learning rate really carefully
+# it is here mostly for debugging purposes
 def generate_dataset_(dataset_len = 5000, num_numbers=26, num_letters=26, save_path=None):
     assert 2 <= num_numbers <= 26
     assert 2 <= num_letters <= 26
@@ -115,6 +116,8 @@ class Tokenizer:
             self.table[n] = counter
             counter += 1
         
+    # map a token to a token info
+    # in the continuous, number 2 is mapped to token "constant" and multiplier 2
     def continuous_map_token(self, token):
         if type(token) == float or type(token) == int:
             return TokenInfo(self.table['constant'], float(token))
@@ -125,7 +128,9 @@ class Tokenizer:
                 return TokenInfo(self.table[token], 1.0)
         else:
             raise ValueError(f'Invalid token type: {type(token)}')
-        
+    
+    # map a token to a token info
+    # in the symbolic map, number 2 is mapped to token "2" and multiplier 1
     def symbolic_map_token(self, token):
         if type(token) == float:
             token = int(token + eps)
@@ -134,15 +139,18 @@ class Tokenizer:
         else:
             return TokenInfo(self.table[token], 1.0)
 
+    # a gloabl control function choosing which token map to use
     def map_token(self, token):
         if number_symbolic_rep:
             return self.symbolic_map_token(token)
         else:
             return self.continuous_map_token(token)
 
+    # map a result token to a label index
     def map_label(self, label):
         return self.label_table[label]
 
+    # input_seq is a list of tokens, of type TokenInfo
     def tokenize(self, input_seq, sol, target_len = None):
 
         pad_length = 0 if target_len is None else target_len - len(input_seq)
@@ -238,6 +246,7 @@ class SimpleTransformer(nn.Module):
 
 class Experiment:
 
+
     def __init__(
         self, embedding_dim, num_heads, num_layers, num_numbers, 
         num_letters, num_test_data=2000, num_training_data=None, num_warump_steps=5000):
@@ -252,34 +261,52 @@ class Experiment:
         self.num_warump_steps = num_warump_steps
         self.num_training_data = num_training_data
 
+    # get a batch of training data
+    # if the num_training_data is not specified, then we randomly sample a batch of data
+    # otherwise, we first sample a numpy random seed, and then use it to generate the data
     def get_batches(self, batch_size):
         np_seed = None
         if self.num_training_data is not None:
+            # sample a numpy random seed to generate the data deterministically
             np_seed = random.randint(0, self.num_training_data // batch_size)
-            
+        
+        # generate the data
         data_batch = generate_dataset(batch_size, self.num_numbers, self.num_letters, seed=np_seed)
+        # remove that data that is in the test set
         data_batch = [d for d in data_batch if str(d['input_seq']) not in self.forbidden_input_seqs]
         return tokenize_batch(data_batch, self.tokenizer)
 
     def train(self, steps, batch_size, eval_every=500):
         print('Training...')
+
+        # adding optimizer here
         self.optimizer = AdamW(self.model.parameters(), lr=3e-5)
         self.lr_scheduler = get_linear_schedule_with_warmup(self.optimizer, num_warmup_steps=self.num_warump_steps, num_training_steps=steps)
+        
+        # some variables for logging
         pbar = tqdm.trange(steps)
         loss_moving_avg = 0
         accs = []
+
+        # this part of the training is pretty much the same
         for step_idx in pbar:
             batch = self.get_batches(batch_size)
             loss = self.model.calculate_loss(batch)
             loss.backward()
             self.optimizer.step()
+
+            # update learning rate with the scheduler
             self.lr_scheduler.step()
             self.optimizer.zero_grad()
+
+            # update moving average
             if step_idx == 0:
                 loss_moving_avg = loss.item()
             else:
                 loss_moving_avg = 0.99 * loss_moving_avg + 0.01 * loss.item()
             pbar.set_description(f'loss: {loss_moving_avg:.3f}')
+
+            # evaluate accuracy
             if step_idx % eval_every == 0:
                 acc = self.evaluate()
                 accs.append(acc)
