@@ -21,7 +21,7 @@ NUMBERs = list(range(1,27))
 LETTERs = ['A', 'B', 'C','D', 'E','F','G','H','I','J','K','L','M','N','O','P','Q','R','S','T','U','V','W','X','Y','Z']
 eps = 0.2
 # currently using different embeddings for different tokens
-number_symbolic_rep = False
+# number_symbolic_rep = False
 
 def generate_dataset(dataset_len = 5000, num_numbers=26, num_letters=26, save_path=None, seed=None):
     assert 2 <= num_numbers <= 26
@@ -93,7 +93,7 @@ def generate_dataset_(dataset_len = 5000, num_numbers=26, num_letters=26, save_p
 
 class Tokenizer:
 
-    def __init__(self, num_numbers, num_letters):
+    def __init__(self, num_numbers, num_letters, number_symbolic_rep=False):
         self.num_letters = num_letters
         self.num_numbers = num_numbers
         self.table = {}
@@ -105,6 +105,7 @@ class Tokenizer:
             counter += 1
         
         self.table['constant'] = counter
+        self.number_symbolic_rep = number_symbolic_rep
         counter += 1
 
         self.label_table = {}
@@ -142,7 +143,7 @@ class Tokenizer:
 
     # a gloabl control function choosing which token map to use
     def map_token(self, token):
-        if number_symbolic_rep:
+        if self.number_symbolic_rep:
             return self.symbolic_map_token(token)
         else:
             return self.continuous_map_token(token)
@@ -250,17 +251,18 @@ class Experiment:
 
     def __init__(
         self, embedding_dim, num_heads, num_layers, num_numbers, 
-        num_letters, num_test_data=2000, num_training_data=None, num_warump_steps=5000):
-        self.experiment_name = f'exp_num_letters={num_letters}_num_numbers={num_numbers}_embedding_dim={embedding_dim}_num_heads={num_heads}_num_layers={num_layers}_num_training_data={num_training_data}'
+        num_letters, num_test_data=2000, num_training_data=None, num_warump_steps=5000, number_symbolic_rep=False):
+        self.experiment_name = f'exp_num_letters={num_letters}_num_numbers={num_numbers}_embedding_dim={embedding_dim}_num_heads={num_heads}_num_layers={num_layers}_num_training_data={num_training_data}_number_symbolic_rep={number_symbolic_rep}'
         self.num_numbers, self.num_letters, self.num_test_data = num_numbers, num_letters, num_test_data
         self.test_data = generate_dataset(num_test_data, num_numbers, num_letters)
         self.forbidden_input_seqs = set(str(d['input_seq']) for d in self.test_data)
 
-        self.tokenizer = Tokenizer(num_numbers, num_letters)
+        self.tokenizer = Tokenizer(num_numbers, num_letters, number_symbolic_rep)
         self.embedding_dim = embedding_dim
         self.model = SimpleTransformer(len(self.tokenizer.table), num_letters, embedding_dim, num_heads, num_layers).to(device)
         self.num_warump_steps = num_warump_steps
         self.num_training_data = num_training_data
+        self.number_symbolic_rep = number_symbolic_rep
 
     # get a batch of training data
     # if the num_training_data is not specified, then we randomly sample a batch of data
@@ -287,7 +289,7 @@ class Experiment:
         # some variables for logging
         pbar = tqdm.trange(steps)
         loss_moving_avg = 0
-        accs = []
+        eval_results = []
 
         # this part of the training is pretty much the same
         for step_idx in pbar:
@@ -309,17 +311,21 @@ class Experiment:
 
             # evaluate accuracy
             if step_idx % eval_every == 0:
-                acc = self.evaluate()
-                accs.append(acc)
+                eval_result = self.evaluate()
+                eval_result['training_loss'] = loss_moving_avg
+
+                eval_results.append(eval_result)
+                acc = eval_result['acc']
+
+                pkl.dump(eval_results, open(f'experiment_log/{self.experiment_name}_eval_results.pkl', 'wb'))
+                print(self.experiment_name, f'Step {step_idx}: accuracy: {acc:.3f}')
                 if acc > 0.99:
                     break
-                pkl.dump(accs, open(f'experiment_log/{self.experiment_name}_accs.pkl', 'wb'))
-                print(self.experiment_name, f'Step {step_idx}: accuracy: {acc:.3f}')
                 self.model.train()
 
     def evaluate(self):
         bsize = 32
-        labels, preds = [], []
+        labels, preds, losses = [], [], []
         self.model.eval()
         with torch.no_grad():
             for batch_idx in range((len(self.test_data) - 1) // bsize + 1):
@@ -327,9 +333,14 @@ class Experiment:
                 batch = tokenize_batch(data_batch, self.tokenizer)
                 logits, _ = self.model.forward(batch)
 
+                losses.extend([-logit[label].cpu().numpy() for logit, label in zip(logits, batch['labels'])])
+
                 preds.extend(logits.argmax(dim=1).cpu().numpy().tolist())
                 labels.extend(batch['labels'].cpu().numpy().tolist())
-        return np.mean(np.array(preds) == np.array(labels))
+        return {
+            'acc': np.mean(np.array(preds) == np.array(labels)),
+            'loss': np.mean(losses)
+        }
 
 
 
@@ -340,10 +351,11 @@ if __name__ == '__main__':
     parser.add_argument('--num_layers', type=int, default=2)
     parser.add_argument('--num_numbers', type=int, default=26)
     parser.add_argument('--num_letters', type=int, default=26)
-    parser.add_argument('--num_training_data', type=int, default=5000)
-    parser.add_argument('--num_steps', type=int, default=1000000)
+    parser.add_argument('--num_training_data', type=int, default=None)
+    parser.add_argument('--num_steps', type=int, default=200000)
+    parser.add_argument('--number_symbolic_rep', action='store_true')
 
     args = parser.parse_args()
 
-    experiment = Experiment(embedding_dim=args.embedding_dim, num_heads=args.num_heads, num_layers=args.num_layers, num_numbers=args.num_numbers, num_letters=args.num_letters, num_training_data=args.num_training_data)
+    experiment = Experiment(embedding_dim=args.embedding_dim, num_heads=args.num_heads, num_layers=args.num_layers, num_numbers=args.num_numbers, num_letters=args.num_letters, num_training_data=args.num_training_data, number_symbolic_rep=args.number_symbolic_rep)
     experiment.train(steps=args.num_steps, batch_size=32)
