@@ -10,22 +10,36 @@ import pickle as pkl
 from argparse import ArgumentParser
 from transformer_model import Tokenizer, SimpleTransformer, tokenize_batch
 from generate_dataset import generate_in_context_dataset
+import os
+
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 class Experiment:
 
 
     def __init__(
-        self, embedding_dim, num_heads, num_layers, num_numbers, 
-        num_letters, num_test_data=2000, num_training_data=None, num_warump_steps=5000, number_symbolic_rep=False, lr=3e-5):
-        self.experiment_name = f'exp_num_letters={num_letters}_num_numbers={num_numbers}_embedding_dim={embedding_dim}_num_heads={num_heads}_num_layers={num_layers}_num_training_data={num_training_data}_number_symbolic_rep={number_symbolic_rep}'
+        self, embedding_dim, num_heads, num_layers, num_numbers,
+        num_letters, num_test_data=2000, num_training_data=None, 
+        num_warump_steps=5000, number_symbolic_rep=False,
+        seed=0, all_experiment_folder='experiments'
+        ):
+        self.experiment_name = f'exp_num_letters={num_letters}_num_numbers={num_numbers}_embedding_dim={embedding_dim}_num_heads={num_heads}_num_layers={num_layers}_num_training_data={num_training_data}_number_symbolic_rep={number_symbolic_rep}_seed={seed}'
+        self.seed = seed
+
+        if not os.path.exists(all_experiment_folder):
+            os.mkdir(all_experiment_folder)
+        self.experiment_dir = os.path.join(all_experiment_folder, self.experiment_name)
+        if not os.path.exists(self.experiment_dir):
+            os.mkdir(self.experiment_dir)
+        self.eval_results_path = os.path.join(self.experiment_dir, 'eval_results.pkl')
+
         self.num_numbers, self.num_letters, self.num_test_data = num_numbers, num_letters, num_test_data
-        self.test_data = generate_in_context_dataset(num_test_data, num_numbers, num_letters)
+        self.test_data = generate_in_context_dataset(num_test_data, num_numbers, num_letters, seed=self.seed + 19971017)
         self.forbidden_input_seqs = set(str(d['input_seq']) for d in self.test_data)
 
         self.tokenizer = Tokenizer(num_numbers, num_letters, number_symbolic_rep)
         self.embedding_dim = embedding_dim
-        self.model = SimpleTransformer(len(self.tokenizer.table), num_letters, embedding_dim, num_heads, num_layers).to(device)
+        self.model = SimpleTransformer(len(self.tokenizer.table), num_letters, embedding_dim, num_heads, num_layers, seed=seed).to(device)
         self.num_warump_steps = num_warump_steps
         self.num_training_data = num_training_data
         self.training_data = None
@@ -41,7 +55,7 @@ class Experiment:
         np_seed = None
         if self.num_training_data is not None:
             # sample a numpy random seed to generate the data deterministically
-            np_seed = random.randint(0, self.num_training_data // batch_size)
+            np_seed = self.seed + random.randint(0, self.num_training_data // batch_size)
         
         # generate the data
         data_batch = generate_in_context_dataset(batch_size, self.num_numbers, self.num_letters, seed=np_seed)
@@ -53,7 +67,7 @@ class Experiment:
         print('Training...')
 
         # adding optimizer here
-        self.optimizer = AdamW(self.model.parameters(), lr=self.lr)
+        self.optimizer = AdamW(self.model.parameters(), lr=1e-4)
         self.lr_scheduler = get_linear_schedule_with_warmup(self.optimizer, num_warmup_steps=self.num_warump_steps, num_training_steps=steps)
         
         # some variables for logging
@@ -82,16 +96,18 @@ class Experiment:
             # evaluate accuracy
             if step_idx % eval_every == 0:
                 eval_result = self.evaluate()
+                eval_result['step'] = step_idx
                 eval_result['training_loss'] = loss_moving_avg
 
                 eval_results.append(eval_result)
                 acc = eval_result['acc']
 
-                pkl.dump(eval_results, open(f'experiment_log/{self.experiment_name}_eval_results.pkl', 'wb'))
+                pkl.dump(eval_results, open(self.eval_results_path, 'wb'))
                 print(self.experiment_name, f'Step {step_idx}: accuracy: {acc:.3f}')
                 if acc > 0.99:
                     break
                 self.model.train()
+        torch.save(self.model.state_dict(), os.path.join(self.experiment_dir, 'final_model.pt'))
 
     def evaluate(self):
         bsize = 32
@@ -122,8 +138,10 @@ if __name__ == '__main__':
     parser.add_argument('--num_numbers', type=int, default=26)
     parser.add_argument('--num_letters', type=int, default=26)
     parser.add_argument('--num_training_data', type=int, default=None)
-    parser.add_argument('--num_steps', type=int, default=200000)
+    parser.add_argument('--num_steps', type=int, default=1000000)
     parser.add_argument('--number_symbolic_rep', action='store_true')
+    parser.add_argument('--seed', type=int, default=0)
+    parser.add_argument('--all_experiment_folder', type=str, default='experiments')
 
     args = parser.parse_args()
     #does not work, stuck at 0.23 acc
@@ -172,4 +190,3 @@ if __name__ == '__main__':
                             num_layers=2, num_numbers=8, num_letters=8,
                             num_training_data=args.num_training_data, number_symbolic_rep=True)
     experiment.train(steps=args.num_steps, batch_size=32)
-
