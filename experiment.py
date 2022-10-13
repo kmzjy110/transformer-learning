@@ -21,7 +21,7 @@ class Experiment:
         self, embedding_dim, num_heads, num_layers, num_numbers,
         num_letters, num_test_data=2000, num_training_data=None, 
         num_warump_steps=5000, number_symbolic_rep=False,
-        seed=0, all_experiment_folder='experiments'
+        seed=0, all_experiment_folder='experiments', lr=1e-4
         ):
         self.experiment_name = f'exp_num_letters={num_letters}_num_numbers={num_numbers}_embedding_dim={embedding_dim}_num_heads={num_heads}_num_layers={num_layers}_num_training_data={num_training_data}_number_symbolic_rep={number_symbolic_rep}_seed={seed}'
         self.seed = seed
@@ -67,7 +67,7 @@ class Experiment:
         print('Training...')
 
         # adding optimizer here
-        self.optimizer = AdamW(self.model.parameters(), lr=1e-4)
+        self.optimizer = AdamW(self.model.parameters(), lr=self.lr)
         self.lr_scheduler = get_linear_schedule_with_warmup(self.optimizer, num_warmup_steps=self.num_warump_steps, num_training_steps=steps)
         
         # some variables for logging
@@ -186,7 +186,13 @@ if __name__ == '__main__':
     # experiment.train(steps=args.num_steps, batch_size=32)
 
 
+    # #0.962 acc
+    # experiment = Experiment(embedding_dim=512, num_heads=4,
+    #                         num_layers=2, num_numbers=8, num_letters=8,
+    #                         num_training_data=args.num_training_data, number_symbolic_rep=True)
+    # experiment.train(steps=args.num_steps, batch_size=32)
+
     experiment = Experiment(embedding_dim=512, num_heads=4,
-                            num_layers=2, num_numbers=8, num_letters=8,
+                            num_layers=2, num_numbers=9, num_letters=9,
                             num_training_data=args.num_training_data, number_symbolic_rep=True)
     experiment.train(steps=args.num_steps, batch_size=32)
