@@ -3,7 +3,7 @@ import json
 NUMBERs = list(range(1,27))
 LETTERs = ['A', 'B', 'C','D', 'E','F','G','H','I','J','K','L','M','N','O','P','Q','R','S','T','U','V','W','X','Y','Z']
 eps = 0.2
-def generate_in_context_dataset(dataset_len = 5000, num_numbers=26, num_letters=26, save_path=None, seed=None):
+def generate_in_context_dataset(dataset_len = 5000, num_numbers=26, num_letters=26, save_path=None, seed=None, fix_len=None):
     assert 2 <= num_numbers <= 26
     assert 2 <= num_letters <= 26
     numbers = NUMBERs[:num_numbers]
@@ -14,7 +14,10 @@ def generate_in_context_dataset(dataset_len = 5000, num_numbers=26, num_letters=
 
     data = []
     for _ in range(dataset_len):
-        num_incontext_examples = np.random.randint(2,num_numbers)
+        if fix_len:
+            num_incontext_examples = fix_len
+        else:
+            num_incontext_examples = np.random.randint(2,num_numbers)
         input_seq = ['[BOS]']
 
         generated_numbers = np.random.choice(numbers, num_incontext_examples, replace=False).tolist()

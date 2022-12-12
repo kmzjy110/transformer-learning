@@ -45,6 +45,8 @@ class Tokenizer:
         for i, n in enumerate(NUMBERs[:num_numbers]):
             self.table[n] = counter
             counter += 1
+        print(self.table)
+        print(len(self.table))
 
     # map a token to a token info
     # in the continuous, number 2 is mapped to token "constant" and multiplier 2
@@ -107,13 +109,24 @@ def tokenize_batch(batch, tokenizer, return_tensors='pt'):
         idxes.append(tokens['idxes'])
         multipliers.append(tokens['multipliers'])
         labels.append(tokens['label'])
+    first_ex = ""
+    for char in batch[0]['input_seq']:
+        if char =='[PAD]':
+            continue
+
+        if type(char) == float:
+            first_ex = first_ex + str(round(char, 2))
+        else:
+            first_ex = first_ex + str(char)
+        first_ex = first_ex + " "
+    first_ex = first_ex + 'SOL:' + batch[0]['sol']
     d = {
-        'idxes': idxes,
-        'multipliers': multipliers,
-        'labels': labels
+        "first_ex": [first_ex,
+                     batch[0]['input_seq']],
+        'idxes': torch.tensor(idxes). to(device) if return_tensors=='pt' else idxes,
+        'multipliers': torch.tensor(multipliers). to(device) if return_tensors=='pt' else multipliers,
+        'labels': torch.tensor(labels).to(device) if return_tensors=='pt' else labels
     }
-    if return_tensors == 'pt':
-        d = {k: torch.tensor(v).to(device) for k, v in d.items()}
     return d
 
 class PositionalEncoding(nn.Module):
@@ -145,8 +158,11 @@ class SimpleTransformer(nn.Module):
         self.embedding_layer = nn.Embedding(embedding_len, embedding_dim, padding_idx=self.padding_idx)
         self.encoder_layer = nn.TransformerEncoderLayer(d_model=embedding_dim, nhead=num_heads, batch_first=True)
         self.embedding_dim = embedding_dim
-
-        self.transformer_encoder = nn.TransformerEncoder(encoder_layer=self.encoder_layer, num_layers=num_layers)
+        self.transformer_encoder_layers = nn.ModuleList([
+            TransformerEncoderLayer(dim=self.embedding_dim, heads=num_heads,
+                                    dim_head=self.embedding_dim, mlp_dim=self.embedding_dim)
+            for _ in range(num_layers)])
+        # self.transformer_encoder = nn.TransformerEncoder(encoder_layer=self.encoder_layer, num_layers=num_layers)
         self.linear_layer = nn.Linear(embedding_dim, num_labels)
         self.logsoftmax = nn.LogSoftmax(dim=1)
         self.loss_func = nn.NLLLoss()
@@ -164,12 +180,74 @@ class SimpleTransformer(nn.Module):
         x = self.pe(x)
         multipliers = multipliers.unsqueeze(-1).repeat(1,1,self.embedding_dim)
         x = x * multipliers
-        x = self.transformer_encoder(x, src_key_padding_mask=src_key_padding_mask)
+        layer_attn_weights = []
+        for layer in self.transformer_encoder_layers:
+            x, attn_weights = layer(x)
+            layer_attn_weights.append(attn_weights)
         x = self.linear_layer(x[:, 0, :])
         logits = self.logsoftmax(x)
-        return logits, labels
+        return logits, labels, torch.stack(layer_attn_weights), tokenized_batch['first_ex']
 
     def calculate_loss(self, batch):
-        logits, labels = self.forward(batch)
+        logits, labels, layer_attn_weights, first_ex = self.forward(batch)
         loss = self.loss_func(logits, labels)
-        return loss
+        return loss, layer_attn_weights, first_ex
+
+class SingleHeadAttention(nn.Module):
+    def __init__(self, input_dim, inner_dim, dropout=0.):
+        super().__init__()
+        self.q = nn.Linear(input_dim, inner_dim, bias=False)
+        self.k = nn.Linear(input_dim, inner_dim, bias=False)
+        self.v = nn.Linear(input_dim, inner_dim, bias=False)
+        self.dropout = nn.Dropout(p=dropout)
+        self.softmax = nn.Softmax(dim=-1)
+        self.d_k = inner_dim
+
+    def forward(self, x):
+        Q = self.q(x)
+        K = self.k(x)
+        V = self.v(x)
+
+        attn_weights = self.softmax(torch.matmul(Q, torch.transpose(K, -2, -1)) / np.sqrt(self.d_k))
+        out = torch.matmul(attn_weights, V)
+
+        out = self.dropout(out)
+        attn_weights = torch.squeeze(attn_weights[0,:,:])
+        return out, attn_weights
+
+class Attention(nn.Module):
+    def __init__(self, dim, heads = 8, dim_head = 64, dropout = 0.):
+        super().__init__()
+        self.attention_heads = nn.ModuleList([
+            SingleHeadAttention(dim, dim_head, dropout=dropout)
+            for _ in range(heads)
+        ])
+
+    def forward(self, x):
+        # modification for attention visualization
+        outputs = [head(x) for head in self.attention_heads]
+        out = torch.cat([o[0] for o in outputs], dim=-1)
+        attn_weights = torch.stack([o[1] for o in outputs])
+        return out, attn_weights
+
+class TransformerEncoderLayer(nn.Module):
+    def __init__(self, dim, heads, dim_head, mlp_dim, dropout = 0.):
+        super().__init__()
+        # modification for attention visualization
+        self.layernorm = nn.LayerNorm(dim)
+        self.attn_proj = nn.Linear(dim_head * heads, dim, bias=False)
+        self.attn = Attention(dim, heads = heads, dim_head = dim_head, dropout = dropout)
+        self.feedforward = nn.Sequential(
+                nn.LayerNorm(dim),
+                nn.Linear(dim, mlp_dim),
+                nn.ReLU(),
+                nn.Dropout(dropout),
+                nn.Linear(mlp_dim, dim),
+                nn.Dropout(dropout)
+        )
+
+    def forward(self, x):
+        dx, attn_weights = self.attn(self.layernorm(x))
+        x = x + self.attn_proj(dx)
+        x = self.feedforward(x) + x
+        return x, attn_weights
