@@ -24,7 +24,8 @@ class Experiment:
         self, embedding_dim, num_heads, num_layers, num_numbers,
         num_letters, num_test_data=2000, num_training_data=None, 
         num_warump_steps=5000, number_symbolic_rep=False,
-        seed=0, all_experiment_folder='experiments', lr=1e-4, acc_change_vis_threshold=0.1, save_attn_every_num_steps=10000, produce_plots=False, plot_attn_seq_len=10
+        seed=0, all_experiment_folder='experiments', lr=1e-4, acc_change_vis_threshold=0.1, save_attn_every_num_steps=10000, produce_plots=False, plot_attn_seq_len=10,
+            save_model_every_num_steps = None
         ):
         self.experiment_name = f'exp_num_letters={num_letters}_num_numbers={num_numbers}_embedding_dim={embedding_dim}_num_heads={num_heads}_num_layers={num_layers}_num_training_data={num_training_data}_number_symbolic_rep={number_symbolic_rep}_seed={seed}'
         self.seed = seed
@@ -38,6 +39,7 @@ class Experiment:
 
         self.num_numbers, self.num_letters, self.num_test_data = num_numbers, num_letters, num_test_data
         self.num_heads, self.num_layers = num_heads, num_layers
+        self.hardcode_pred_data = generate_in_context_dataset(100,num_numbers,num_letters,seed=self.seed+12345,fix_len=10 )
         self.test_data = generate_in_context_dataset(num_test_data, num_numbers, num_letters, seed=self.seed + 19971017)
 
         self.forbidden_input_seqs = set(str(d['input_seq']) for d in self.test_data)
@@ -59,10 +61,12 @@ class Experiment:
         plot_batch_seed=self.seed+2000
         seed_add=0
         self.plot_batch = generate_in_context_dataset(1, self.num_numbers, self.num_letters, seed=self.seed+2000, fix_len=self.plot_attn_data_gen_seq_len)
+
         while str(self.plot_batch[0]['input_seq']) in self.forbidden_input_seqs:
             self.plot_batch = generate_in_context_dataset(1, self.num_numbers, self.num_letters, seed=plot_batch_seed,
                                                      fix_len=self.plot_attn_data_gen_seq_len)
             seed_add+=1
+        self.save_model_every_num_steps = save_model_every_num_steps
     # get a batch of training data
     # if the num_training_data is not specified, then we randomly sample a batch of data
     # otherwise, we first sample a numpy random seed, and then use it to generate the data
@@ -181,6 +185,11 @@ class Experiment:
                 # if acc > 0.99:
                 #     break
                 self.model.train()
+
+            if self.save_model_every_num_steps:
+                if step_idx % self.save_model_every_num_steps == 0:
+                    torch.save(self.model.state_dict(), os.path.join(self.experiment_dir, 'model_step_' + str(step_idx) + '.pt'))
+                    print('model saved: ','model_step_' + str(step_idx) + '.pt')
         torch.save(self.model.state_dict(), os.path.join(self.experiment_dir, 'final_model.pt'))
     def save_plots(self, plots_to_save, special_plot_filename=None):
         if special_plot_filename is None:
@@ -225,9 +234,11 @@ class Experiment:
 
                 preds.extend(logits.argmax(dim=1).cpu().numpy().tolist())
                 labels.extend(batch['labels'].cpu().numpy().tolist())
+            hardcode_pred_acc = self.pred_1_head_model(None,False)
         return {
             'acc': np.mean(np.array(preds) == np.array(labels)),
-            'loss': np.mean(losses)
+            'loss': np.mean(losses),
+            'hardcode_pred_acc': hardcode_pred_acc
         }
 
     def generate_model_attention_plots(self, model_load_path=None):
@@ -239,29 +250,32 @@ class Experiment:
 
             batch = self.get_batches(1, fix_len=self.plot_attn_data_gen_seq_len)
             _, _, layer_attn_weights, first_ex = self.model.forward(batch)
-
-            fig, axs = plt.subplots(1, 2, figsize=(12, 12))
-            for layer in range(layer_attn_weights.shape[0]):
-
-                for head in range(layer_attn_weights.shape[1]):
-                    # current_ax = axs[(head//2)][head%2]
-                    # current_ax = axs[head]
-                    current_ax = axs[layer]
-                    ax = sns.heatmap(torch.squeeze(layer_attn_weights[layer, head, :self.attn_matrix_plot_seq_len,
-                                                   :self.attn_matrix_plot_seq_len]).cpu().tolist(),
-                                     linewidth=0.5, annot=True, annot_kws={"fontsize": 1},
-                                     xticklabels=first_ex[1][:self.attn_matrix_plot_seq_len],
-                                     yticklabels=first_ex[1][:self.attn_matrix_plot_seq_len], ax=current_ax,
-                                     square=True, cbar_kws={"shrink": 0.25})
-                    ax.set_xticklabels(ax.get_xticklabels(), rotation=60, fontsize=4)
-                    ax.set_yticklabels(ax.get_yticklabels(), rotation=0, fontsize=4)
-                    ax.invert_yaxis()
-                    ax.set_title(
-                        f"Attention weights at layer {layer} head {head}" +
-                        '\n' + "Sequence:" + first_ex[0], size=5)
-                # current_plots.append(axs[0][0])
+            fig, axs = self.gen_sns_plots(layer_attn_weights,first_ex)
             current_plots.append(axs[0])
         self.save_plots(current_plots, "32_attn_plots")
+
+    def gen_sns_plots(self, layer_attn_weights, first_ex):
+        fig, axs = plt.subplots(1, 2, figsize=(12, 12))
+        for layer in range(layer_attn_weights.shape[0]):
+
+            for head in range(layer_attn_weights.shape[1]):
+                # current_ax = axs[(head//2)][head%2]
+                # current_ax = axs[head]
+                current_ax = axs[layer]
+                ax = sns.heatmap(torch.squeeze(layer_attn_weights[layer, head, :self.attn_matrix_plot_seq_len,
+                                               :self.attn_matrix_plot_seq_len]).cpu().tolist(),
+                                 linewidth=0.5, annot=True, annot_kws={"fontsize": 1},
+                                 xticklabels=first_ex[1][:self.attn_matrix_plot_seq_len],
+                                 yticklabels=first_ex[1][:self.attn_matrix_plot_seq_len], ax=current_ax,
+                                 square=True, cbar_kws={"shrink": 0.25})
+                ax.set_xticklabels(ax.get_xticklabels(), rotation=60, fontsize=4)
+                ax.set_yticklabels(ax.get_yticklabels(), rotation=0, fontsize=4)
+                ax.invert_yaxis()
+                ax.set_title(
+                    f"Attention weights at layer {layer} head {head}" +
+                    '\n' + "Sequence:" + first_ex[0], size=5)
+            # current_plots.append(axs[0][0])
+        return fig, axs
 
     def compare_attention_heads(self, model_load_paths, save_plots=False):
         models = []
@@ -286,26 +300,7 @@ class Experiment:
                 _,_,layer_attn_weights, first_ex = model.forward(batch)
                 current_attention_weights.append(layer_attn_weights)
                 if save_plots:
-                    fig, axs = plt.subplots(1, 2, figsize=(12, 12))
-                    for layer in range(layer_attn_weights.shape[0]):
-
-                        for head in range(layer_attn_weights.shape[1]):
-                            # current_ax = axs[(head//2)][head%2]
-                            # current_ax = axs[head]
-                            current_ax = axs[layer]
-                            ax = sns.heatmap(torch.squeeze(layer_attn_weights[layer, head, :self.attn_matrix_plot_seq_len,
-                                                           :self.attn_matrix_plot_seq_len]).cpu().tolist(),
-                                             linewidth=0.5, annot=True, annot_kws={"fontsize": 1},
-                                             xticklabels=first_ex[1][:self.attn_matrix_plot_seq_len],
-                                             yticklabels=first_ex[1][:self.attn_matrix_plot_seq_len], ax=current_ax,
-                                             square=True, cbar_kws={"shrink": 0.25})
-                            ax.set_xticklabels(ax.get_xticklabels(), rotation=60, fontsize=4)
-                            ax.set_yticklabels(ax.get_yticklabels(), rotation=0, fontsize=4)
-                            ax.invert_yaxis()
-                            ax.set_title(
-                                f"Attention weights at layer {layer} head {head}" +
-                                '\n' + "Sequence:" + first_ex[0], size=5)
-                        # current_plots.append(axs[0][0])
+                    fig, axs = self.gen_sns_plots(layer_attn_weights, first_ex)
                     plots[model_index].append(axs[0])
 
 
@@ -349,15 +344,19 @@ class Experiment:
             for i in range(len(models)):
                 self.save_plots(plots[i], "attn_plots_model_"+str(i))
 
-    def pred_1_head_model(self, model_load_path):
-        model = SimpleTransformer(len(self.tokenizer.table), self.num_letters, self.embedding_dim, self.num_heads,
-                                  self.num_layers).to(device)
-        model.load_state_dict(torch.load(model_load_path))
+    def pred_1_head_model(self, model_load_path, load_model=True):
+        if load_model:
+            model = SimpleTransformer(len(self.tokenizer.table), self.num_letters, self.embedding_dim, self.num_heads,
+                                      self.num_layers).to(device)
+            model.load_state_dict(torch.load(model_load_path))
+        else:
+            model = self.model
         layer_0_agg_pred_acc=0
         layer_1_agg_pred_acc=0
         layer_1_first_token_agrees = 0
-        for data_index in range(100):
-            batch = self.get_batches(1,fix_len=10)
+
+        for item in self.hardcode_pred_data:
+            batch = tokenize_batch([item],self.tokenizer)
             _, _, layer_attn_weights, first_ex = model.forward(batch)
             layer_0_max_tokens = layer_attn_weights[0,0,:,:].argmax(dim=-1)
             layer_0_agrees = 0
@@ -379,10 +378,11 @@ class Experiment:
 
             layer_1_agrees +=layer_1_max_tokens[0] == sol_index+3
             if not (layer_1_max_tokens[0] == sol_index+3):
-                print(0)
-                print(sol_index)
-                print(layer_1_max_tokens[0])
-                print()
+                # print(0)
+                # print(sol_index)
+                # print(layer_1_max_tokens[0])
+                # print()
+                pass
             else:
                 layer_1_first_token_agrees+=1
             for i in range(2,6):
@@ -394,10 +394,38 @@ class Experiment:
 
             layer_1_pred_acc = layer_1_agrees.float()/13
             layer_1_agg_pred_acc +=layer_1_pred_acc
-        print(layer_0_agg_pred_acc/100)
-        print(layer_1_agg_pred_acc/100)
-        print(layer_1_first_token_agrees)
+        # print(layer_0_agg_pred_acc/100)
+        # print(layer_1_agg_pred_acc/100)
+        # print(layer_1_first_token_agrees)
+        hardcode_pred_acc = ((layer_0_agg_pred_acc + layer_1_agg_pred_acc)/200).cpu().detach().numpy()
+        print("hardcode pred acc: ", hardcode_pred_acc)
+        return hardcode_pred_acc
 
+    def linear_connectivity(self, model_path):
+
+        final_model_state_dict = torch.load(model_path+'model_step_1950000.pt')
+        accuracys = []
+        with torch.no_grad():
+            for i in range(40):
+                current_l2_norm = 0
+                old_model = SimpleTransformer(len(self.tokenizer.table), self.num_letters, self.embedding_dim, self.num_heads, self.num_layers).to(device)
+                old_model.load_state_dict(torch.load(model_path+'model_step_'+str(i*50000)+'.pt'))
+                old_model_state_dict = torch.load(model_path+'model_step_'+str(i*50000)+'.pt')
+
+                average_model = SimpleTransformer(len(self.tokenizer.table), self.num_letters, self.embedding_dim, self.num_heads, self.num_layers).to(device)
+                average_model_state_dict = average_model.state_dict()
+                for key in final_model_state_dict.keys():
+                    average_model_state_dict[key] = (final_model_state_dict[key] + old_model_state_dict[key])/2
+                average_model.load_state_dict(average_model_state_dict)
+                for name, param in old_model.named_parameters():
+                    current_l2_norm +=torch.norm(param)
+
+                print(f"L2 norm of parameters of step {i*50000} model: {current_l2_norm}")
+                self.model = average_model
+                model_results = self.evaluate()
+                print(f'Accuracy of average model between final model at step 1950000 and step {i*50000} model: '+str(model_results['acc']))
+                accuracys.append({"acc":model_results['acc'], "hardcode_pred_acc":model_results['hardcode_pred_acc'], "l2_norm": current_l2_norm.cpu().numpy(), 'step':i*50000})
+        pkl.dump(accuracys, open(model_path+'linear_connectivity_results.pkl', 'wb'))
 if __name__ == '__main__':
     parser = ArgumentParser()
     parser.add_argument('--embedding_dim', type=int, default=128)
@@ -406,7 +434,7 @@ if __name__ == '__main__':
     parser.add_argument('--num_numbers', type=int, default=26)
     parser.add_argument('--num_letters', type=int, default=26)
     parser.add_argument('--num_training_data', type=int, default=None)
-    parser.add_argument('--num_steps', type=int, default=2000000)
+    parser.add_argument('--num_steps', type=int, default=1000000)
     parser.add_argument('--number_symbolic_rep', action='store_true')
     parser.add_argument('--seed', type=int, default=0)
     parser.add_argument('--all_experiment_folder', type=str, default='experiments')
@@ -466,11 +494,22 @@ if __name__ == '__main__':
     #                         num_training_data=args.num_training_data, number_symbolic_rep=True)
     # experiment.train(steps=args.num_steps, batch_size=32)
     #0.44?
+
+    # experiment.train(steps=args.num_steps, batch_size=32)
+
     experiment = Experiment(embedding_dim=512, num_heads=1,
                             num_layers=2, num_numbers=26, num_letters=26,
-                            num_training_data=args.num_training_data, number_symbolic_rep=True, seed=8)
-    # experiment.generate_model_attention_plots("experiments/exp_num_letters=26_num_numbers=26_embedding_dim=512_num_heads=1_num_layers=2_num_training_data=None_number_symbolic_rep=True_seed=6/final_model.pt")
-    experiment.compare_attention_heads(["experiments/exp_num_letters=26_num_numbers=26_embedding_dim=512_num_heads=1_num_layers=2_num_training_data=None_number_symbolic_rep=True_seed=2/final_model.pt",
-                                        "experiments/exp_num_letters=26_num_numbers=26_embedding_dim=512_num_heads=1_num_layers=2_num_training_data=None_number_symbolic_rep=True_seed=6/final_model.pt"])
-    # experiment.pred_1_head_model("experiments/exp_num_letters=26_num_numbers=26_embedding_dim=512_num_heads=1_num_layers=2_num_training_data=None_number_symbolic_rep=True_seed=2/final_model.pt")
-    # experiment.train(steps=args.num_steps, batch_size=32)
+                            num_training_data=args.num_training_data, number_symbolic_rep=True, seed=2, save_model_every_num_steps=5000)
+
+
+    # experiment.generate_model_attention_plots("experiments/exp_num_letters=26_num_numbers=26_"
+    #                                           "embedding_dim=512_num_heads=1_num_layers=2_"
+    #                                           "num_training_data=None_number_symbolic_rep=True_seed=6/final_model.pt")
+    # experiment.compare_attention_heads(["experiments/exp_num_letters=26_num_numbers=26_embedding_dim=512_num_heads=1_"
+    #                                     "num_layers=2_num_training_data=None_number_symbolic_rep=True_seed=2/final_model.pt",
+    #                                     "experiments/exp_num_letters=26_num_numbers=26_embedding_dim=512_num_heads=1_"
+    #                                     "num_layers=2_num_training_data=None_number_symbolic_rep=True_seed=6/final_model.pt"], save_plots=True)
+    # experiment.pred_1_head_model("experiments/exp_num_letters=26_num_numbers=26_embedding_dim=512_num_heads=1_"
+    #                              "num_layers=2_num_training_data=None_number_symbolic_rep=True_seed=2/final_model.pt")
+    experiment.train(steps=args.num_steps, batch_size=32)
+    # experiment.linear_connectivity("experiments/exp_num_letters=26_num_numbers=26_embedding_dim=512_num_heads=1_num_layers=2_num_training_data=None_number_symbolic_rep=True_seed=2/")
