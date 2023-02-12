@@ -91,7 +91,7 @@ class Experiment:
             data_batch = [d for d in data_batch if str(d['input_seq']) not in self.forbidden_input_seqs]
         return tokenize_batch(data_batch, self.tokenizer)
 
-    def train(self, steps, batch_size, eval_every=500):
+    def train(self, steps, batch_size, eval_every=500, final_model_state_dict=None):
         print('Training...')
 
         # adding optimizer here
@@ -129,9 +129,25 @@ class Experiment:
 
             if step_idx % eval_every == 0:
                 eval_result = self.evaluate()
+                l2_norm = self.model_l2_norm(self.model)
                 eval_result['step'] = step_idx
                 eval_result['training_loss'] = loss_moving_avg
-
+                eval_result['l2_norm'] = l2_norm
+                if final_model_state_dict:
+                    average_model = SimpleTransformer(len(self.tokenizer.table), self.num_letters, self.embedding_dim,
+                                                      self.num_heads, self.num_layers).to(device)
+                    average_model_state_dict = average_model.state_dict()
+                    current_model_state_dict = self.model.state_dict()
+                    for key in final_model_state_dict.keys():
+                        average_model_state_dict[key] = (final_model_state_dict[key] + current_model_state_dict[key]) / 2
+                    average_model.load_state_dict(average_model_state_dict)
+                    model_results = self.evaluate(average_model)
+                    print(
+                        f'Accuracy of average model between final model  and step {step_idx} model: ' + str(
+                            model_results['acc']))
+                    eval_result['interpolated_acc'] = model_results['acc']
+                    eval_result['interpolated_hardcode_pred_acc'] = model_results['hardcode_pred_acc']
+                print(eval_result)
                 eval_results.append(eval_result)
                 acc = eval_result['acc']
 
@@ -144,23 +160,8 @@ class Experiment:
                     _, _, layer_attn_weights, first_ex = self.model.forward(batch)
                     self.optimizer.zero_grad()
                     current_plots = []
-                    fig, axs = plt.subplots(1, 2, figsize=(12, 12))
-                    for layer in range(layer_attn_weights.shape[0]):
-
-                        for head in range(layer_attn_weights.shape[1]):
-                            # current_ax = axs[(head//2)][head%2]
-                            # current_ax = axs[head]
-                            current_ax = axs[layer]
-                            ax = sns.heatmap(torch.squeeze(layer_attn_weights[layer, head, :self.attn_matrix_plot_seq_len, :self.attn_matrix_plot_seq_len]).cpu().tolist(),
-                                             linewidth=0.5, annot=True, annot_kws={"fontsize": 1}, xticklabels=first_ex[1][:self.attn_matrix_plot_seq_len],
-                                             yticklabels=first_ex[1][:self.attn_matrix_plot_seq_len], ax=current_ax, square=True, cbar_kws={"shrink":0.25})
-                            ax.set_xticklabels(ax.get_xticklabels(), rotation=60, fontsize=4)
-                            ax.set_yticklabels(ax.get_yticklabels(), rotation=0, fontsize=4)
-                            ax.invert_yaxis()
-                            ax.set_title(f"Step {step_idx} attention weights at layer {layer} head {head}, with accuracy {acc:.3f}" +
-                                         '\n' + "Sequence:" + first_ex[0], size=5)
-                        # current_plots.append(axs[0][0])
-                        current_plots.append(axs[0])
+                    fig, axs = self.gen_sns_plots(layer_attn_weights,first_ex, f"Step {step_idx} ")
+                    current_plots.append(axs[0])
 
                     rolling_plots.append(current_plots)
 
@@ -220,15 +221,17 @@ class Experiment:
         return corrs, np.mean(corrs)
 
 
-    def evaluate(self):
+    def evaluate(self, model=None):
         bsize = 32
         labels, preds, losses = [], [], []
-        self.model.eval()
+        if model is None:
+            model = self.model
+        model.eval()
         with torch.no_grad():
             for batch_idx in range((len(self.test_data) - 1) // bsize + 1):
                 data_batch = self.test_data[batch_idx * bsize: (batch_idx + 1) * bsize]
                 batch = tokenize_batch(data_batch, self.tokenizer)
-                logits, _, _, _ = self.model.forward(batch)
+                logits, _, _, _ = model.forward(batch)
 
                 losses.extend([-logit[label].cpu().numpy() for logit, label in zip(logits, batch['labels'])])
 
@@ -254,7 +257,7 @@ class Experiment:
             current_plots.append(axs[0])
         self.save_plots(current_plots, "32_attn_plots")
 
-    def gen_sns_plots(self, layer_attn_weights, first_ex):
+    def gen_sns_plots(self, layer_attn_weights, first_ex, title_prefix=None):
         fig, axs = plt.subplots(1, 2, figsize=(12, 12))
         for layer in range(layer_attn_weights.shape[0]):
 
@@ -271,9 +274,10 @@ class Experiment:
                 ax.set_xticklabels(ax.get_xticklabels(), rotation=60, fontsize=4)
                 ax.set_yticklabels(ax.get_yticklabels(), rotation=0, fontsize=4)
                 ax.invert_yaxis()
-                ax.set_title(
-                    f"Attention weights at layer {layer} head {head}" +
-                    '\n' + "Sequence:" + first_ex[0], size=5)
+                title = f"Attention weights at layer {layer} head {head}" + '\n' + "Sequence:" + first_ex[0]
+                if title_prefix:
+                    title = title_prefix + title
+                ax.set_title(title, size=5)
             # current_plots.append(axs[0][0])
         return fig, axs
 
@@ -400,17 +404,24 @@ class Experiment:
         hardcode_pred_acc = ((layer_0_agg_pred_acc + layer_1_agg_pred_acc)/200).cpu().detach().numpy()
         print("hardcode pred acc: ", hardcode_pred_acc)
         return hardcode_pred_acc
-
+    def model_l2_norm(self, model):
+        with torch.no_grad():
+            l2_norm = 0
+            for name, param in model.named_parameters():
+                l2_norm += torch.norm(param)
+            return l2_norm.detach().cpu().numpy()
     def linear_connectivity(self, model_path):
 
-        final_model_state_dict = torch.load(model_path+'model_step_1950000.pt')
+        final_model_state_dict = torch.load(model_path+f'model_step_{191*5000}.pt')
         accuracys = []
+
+        old_model_eval_results = []
         with torch.no_grad():
-            for i in range(40):
+            for i in range(192):
                 current_l2_norm = 0
                 old_model = SimpleTransformer(len(self.tokenizer.table), self.num_letters, self.embedding_dim, self.num_heads, self.num_layers).to(device)
-                old_model.load_state_dict(torch.load(model_path+'model_step_'+str(i*50000)+'.pt'))
-                old_model_state_dict = torch.load(model_path+'model_step_'+str(i*50000)+'.pt')
+                old_model.load_state_dict(torch.load(model_path+'model_step_'+str(i*5000)+'.pt'))
+                old_model_state_dict = torch.load(model_path+'model_step_'+str(i*5000)+'.pt')
 
                 average_model = SimpleTransformer(len(self.tokenizer.table), self.num_letters, self.embedding_dim, self.num_heads, self.num_layers).to(device)
                 average_model_state_dict = average_model.state_dict()
@@ -420,12 +431,29 @@ class Experiment:
                 for name, param in old_model.named_parameters():
                     current_l2_norm +=torch.norm(param)
 
-                print(f"L2 norm of parameters of step {i*50000} model: {current_l2_norm}")
+                print(f"L2 norm of parameters of step {i*5000} model: {current_l2_norm}")
                 self.model = average_model
                 model_results = self.evaluate()
-                print(f'Accuracy of average model between final model at step 1950000 and step {i*50000} model: '+str(model_results['acc']))
-                accuracys.append({"acc":model_results['acc'], "hardcode_pred_acc":model_results['hardcode_pred_acc'], "l2_norm": current_l2_norm.cpu().numpy(), 'step':i*50000})
-        pkl.dump(accuracys, open(model_path+'linear_connectivity_results.pkl', 'wb'))
+                print(f'Accuracy of average model between final model at step {191*5000} and step {i*5000} model: '+str(model_results['acc']))
+                accuracys.append({"acc":model_results['acc'], "hardcode_pred_acc":model_results['hardcode_pred_acc'], "l2_norm": current_l2_norm.cpu().numpy(), 'step':i*5000})
+
+
+        pkl.dump(old_model_eval_results, open(model_path + 'eval_results.pkl', 'wb'))
+        print('done')
+        # pkl.dump(accuracys, open(model_path+'linear_connectivity_results.pkl', 'wb'))
+        # final_model = SimpleTransformer(len(self.tokenizer.table), self.num_letters, self.embedding_dim, self.num_heads, self.num_layers).to(device)
+        # final_model.load_state_dict(torch.load(model_path+f'model_step_{199*5000}.pt'))
+        # self.model = final_model
+        # print(self.evaluate())
+        #
+        #
+        # # for i in range(200):
+        # #     old_model = SimpleTransformer(len(self.tokenizer.table), self.num_letters, self.embedding_dim, self.num_heads, self.num_layers).to(device)
+        # #     old_model.load_state_dict(torch.load(model_path+'model_step_'+str(i*5000)+'.pt'))
+        # #     old_model_state_dict = torch.load(model_path+'model_step_'+str(i*5000)+'.pt')
+        # #
+        # #     self.model = old_model
+        # #     print(self.evaluate())
 if __name__ == '__main__':
     parser = ArgumentParser()
     parser.add_argument('--embedding_dim', type=int, default=128)
@@ -434,7 +462,7 @@ if __name__ == '__main__':
     parser.add_argument('--num_numbers', type=int, default=26)
     parser.add_argument('--num_letters', type=int, default=26)
     parser.add_argument('--num_training_data', type=int, default=None)
-    parser.add_argument('--num_steps', type=int, default=1000000)
+    parser.add_argument('--num_steps', type=int, default=2000000)
     parser.add_argument('--number_symbolic_rep', action='store_true')
     parser.add_argument('--seed', type=int, default=0)
     parser.add_argument('--all_experiment_folder', type=str, default='experiments')
@@ -499,8 +527,9 @@ if __name__ == '__main__':
 
     experiment = Experiment(embedding_dim=512, num_heads=1,
                             num_layers=2, num_numbers=26, num_letters=26,
-                            num_training_data=args.num_training_data, number_symbolic_rep=True, seed=2, save_model_every_num_steps=5000)
-
+                            num_training_data=args.num_training_data, number_symbolic_rep=True, seed=6, save_model_every_num_steps=None)
+    experiment.train(steps=args.num_steps, batch_size=32,
+                     final_model_state_dict=torch.load(f'experiments/exp_num_letters=26_num_numbers=26_embedding_dim=512_num_heads=1_num_layers=2_num_training_data=None_number_symbolic_rep=True_seed=6/model_step_955000.pt'))
 
     # experiment.generate_model_attention_plots("experiments/exp_num_letters=26_num_numbers=26_"
     #                                           "embedding_dim=512_num_heads=1_num_layers=2_"
@@ -511,5 +540,5 @@ if __name__ == '__main__':
     #                                     "num_layers=2_num_training_data=None_number_symbolic_rep=True_seed=6/final_model.pt"], save_plots=True)
     # experiment.pred_1_head_model("experiments/exp_num_letters=26_num_numbers=26_embedding_dim=512_num_heads=1_"
     #                              "num_layers=2_num_training_data=None_number_symbolic_rep=True_seed=2/final_model.pt")
-    experiment.train(steps=args.num_steps, batch_size=32)
-    # experiment.linear_connectivity("experiments/exp_num_letters=26_num_numbers=26_embedding_dim=512_num_heads=1_num_layers=2_num_training_data=None_number_symbolic_rep=True_seed=2/")
+    # experiment.train(steps=args.num_steps, batch_size=32)
+    # experiment.linear_connectivity("experiments/exp_num_letters=26_num_numbers=26_embedding_dim=512_num_heads=1_num_layers=2_num_training_data=None_number_symbolic_rep=True_seed=6/")
