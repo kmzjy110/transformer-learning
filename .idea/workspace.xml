@@ -2,11 +2,7 @@
 <project version="4">
   <component name="ChangeListManager">
     <list default="true" id="026f4353-176f-4562-a63f-78fd523850b2" name="Default" comment="">
-      <change beforePath="$PROJECT_DIR$/26_1_seed_2.pkl" beforeDir="false" afterPath="$PROJECT_DIR$/26_1_seed_2.pkl" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/26_1_seed_6.pkl" beforeDir="false" afterPath="$PROJECT_DIR$/26_1_seed_6.pkl" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/2_lc.pkl" beforeDir="false" afterPath="$PROJECT_DIR$/2_lc.pkl" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/experiment.py" beforeDir="false" afterPath="$PROJECT_DIR$/experiment.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/main.py" beforeDir="false" afterPath="$PROJECT_DIR$/main.py" afterDir="false" />
     </list>
     <option name="EXCLUDED_CONVERTED_TO_IGNORED" value="true" />
     <option name="TRACKING_ENABLED" value="true" />
@@ -19,14 +15,14 @@
     <SUITE FILE_PATH="coverage/transformer_learning$main.coverage" NAME="main Coverage Results" MODIFIED="1676015197009" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="true" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$" />
   </component>
   <component name="FileEditorManager">
-    <splitter split-orientation="horizontal" split-proportion="0.17027864">
+    <splitter split-orientation="horizontal" split-proportion="0.6879257">
       <split-first>
         <leaf SIDE_TABS_SIZE_LIMIT_KEY="300">
           <file leaf-file-name="experiment.py" pinned="false" current-in-tab="true">
             <entry file="file://$PROJECT_DIR$/experiment.py">
               <provider selected="true" editor-type-id="text-editor">
-                <state relative-caret-position="273">
-                  <caret line="259" column="21" selection-start-line="259" selection-start-column="8" selection-end-line="259" selection-end-column="21" />
+                <state relative-caret-position="-1314">
+                  <caret line="27" column="45" lean-forward="true" selection-start-line="27" selection-start-column="45" selection-end-line="27" selection-end-column="45" />
                   <folding>
                     <element signature="e#0#18#0" expanded="true" />
                   </folding>
@@ -77,8 +73,8 @@
           <file leaf-file-name="experiment.py" pinned="false" current-in-tab="true">
             <entry file="file://$PROJECT_DIR$/experiment.py">
               <provider selected="true" editor-type-id="text-editor">
-                <state relative-caret-position="518">
-                  <caret line="243" column="50" selection-start-line="243" selection-start-column="33" selection-end-line="243" selection-end-column="50" />
+                <state relative-caret-position="482">
+                  <caret line="531" column="49" lean-forward="true" selection-start-line="530" selection-start-column="4" selection-end-line="531" selection-end-column="49" />
                   <folding>
                     <element signature="e#0#18#0" expanded="true" />
                   </folding>
@@ -734,8 +730,8 @@
     </entry>
     <entry file="file://$PROJECT_DIR$/experiment.py">
       <provider selected="true" editor-type-id="text-editor">
-        <state relative-caret-position="518">
-          <caret line="243" column="50" selection-start-line="243" selection-start-column="33" selection-end-line="243" selection-end-column="50" />
+        <state relative-caret-position="-1314">
+          <caret line="27" column="45" lean-forward="true" selection-start-line="27" selection-start-column="45" selection-end-line="27" selection-end-column="45" />
           <folding>
             <element signature="e#0#18#0" expanded="true" />
           </folding>

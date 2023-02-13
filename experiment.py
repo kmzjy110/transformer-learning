@@ -525,11 +525,11 @@ if __name__ == '__main__':
 
     # experiment.train(steps=args.num_steps, batch_size=32)
 
-    experiment = Experiment(embedding_dim=512, num_heads=1,
+    experiment = Experiment(embedding_dim=512, num_heads=2,
                             num_layers=2, num_numbers=26, num_letters=26,
                             num_training_data=args.num_training_data, number_symbolic_rep=True, seed=6, save_model_every_num_steps=None)
     experiment.train(steps=args.num_steps, batch_size=32,
-                     final_model_state_dict=torch.load(f'experiments/exp_num_letters=26_num_numbers=26_embedding_dim=512_num_heads=1_num_layers=2_num_training_data=None_number_symbolic_rep=True_seed=6/model_step_955000.pt'))
+                     final_model_state_dict=None)
 
     # experiment.generate_model_attention_plots("experiments/exp_num_letters=26_num_numbers=26_"
     #                                           "embedding_dim=512_num_heads=1_num_layers=2_"
