@@ -147,17 +147,21 @@ class PositionalEncoding(nn.Module):
         return self.dropout(x)
 
 class SimpleTransformer(nn.Module):
-    def __init__(self, embedding_len, num_labels, embedding_dim, num_heads, num_layers, seed=0):
+    def __init__(self, embedding_len, num_labels, embedding_dim, num_heads, num_layers, seed=0, path=None):
         super().__init__()
         torch.manual_seed(seed)
         np.random.seed(seed)
         random.seed(seed)
 
         self.padding_idx = 0
+        self.embedding_len = embedding_len
+        self.embedding_dim = embedding_dim
+        self.num_labels = num_labels
+        self.num_heads = num_heads
+        self.num_layers = num_layers
 
         self.embedding_layer = nn.Embedding(embedding_len, embedding_dim, padding_idx=self.padding_idx)
         self.encoder_layer = nn.TransformerEncoderLayer(d_model=embedding_dim, nhead=num_heads, batch_first=True)
-        self.embedding_dim = embedding_dim
         self.transformer_encoder_layers = nn.ModuleList([
             TransformerEncoderLayer(dim=self.embedding_dim, heads=num_heads,
                                     dim_head=self.embedding_dim, mlp_dim=self.embedding_dim)
@@ -167,7 +171,14 @@ class SimpleTransformer(nn.Module):
         self.logsoftmax = nn.LogSoftmax(dim=1)
         self.loss_func = nn.NLLLoss()
         self.pe = PositionalEncoding(embedding_dim)
+        if path is not None:
+            self.load_state_dict(torch.load(path))
+
         self.to(device)
+    
+    def copy_self(self):
+        return SimpleTransformer(self.embedding_len, self.num_labels, self.embedding_dim, self.num_heads, self.num_layers)
+
 
     def forward(self, tokenized_batch):
         sequences, labels, multipliers = tokenized_batch['idxes'], tokenized_batch['labels'], tokenized_batch['multipliers']
