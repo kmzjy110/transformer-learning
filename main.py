@@ -5,7 +5,7 @@ data= []
 seeds = [6]
 for i in seeds:
 
-    with open('26_1_seed_'+str(i)+".pkl", 'rb') as f:
+    with open('26_2_'+str(i)+".pkl", 'rb') as f:
         data.append(pickle.load(f))
 print(data)
 for index, data_seed in enumerate(data):
@@ -18,14 +18,8 @@ for index, data_seed in enumerate(data):
     y = [item['hardcode_pred_acc'] for item in data_seed]
     plt.plot(x,y, label ="seed "+ str(seeds[index]) +" hard code prediction accuracy")
 
-lc = pickle.load(open('6_lc.pkl','rb'))
-x = [item['step'] for item in lc]
-y = [item['acc'] for item in lc]
-plt.plot(x,y, label ="averaged model accuracy (between final model and step x model)")
-#
-x = [item['step'] for item in lc]
-y = [item['hardcode_pred_acc'] for item in lc]
-plt.plot(x,y, label ="hardcode pred accuracy for averaged model")
+lc = pickle.load(open('26_2_6.pkl','rb'))
+
 
 max_l2 = max([item['l2_norm'] for item in lc])
 min_l2 = min([item['l2_norm'] for item in lc])

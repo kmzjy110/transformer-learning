@@ -109,20 +109,8 @@ def tokenize_batch(batch, tokenizer, return_tensors='pt'):
         idxes.append(tokens['idxes'])
         multipliers.append(tokens['multipliers'])
         labels.append(tokens['label'])
-    first_ex = ""
-    for char in batch[0]['input_seq']:
-        if char =='[PAD]':
-            continue
 
-        if type(char) == float:
-            first_ex = first_ex + str(round(char, 2))
-        else:
-            first_ex = first_ex + str(char)
-        first_ex = first_ex + " "
-    first_ex = first_ex + 'SOL:' + batch[0]['sol']
     d = {
-        "first_ex": [first_ex,
-                     batch[0]['input_seq']],
         'idxes': torch.tensor(idxes). to(device) if return_tensors=='pt' else idxes,
         'multipliers': torch.tensor(multipliers). to(device) if return_tensors=='pt' else multipliers,
         'labels': torch.tensor(labels).to(device) if return_tensors=='pt' else labels
@@ -197,12 +185,12 @@ class SimpleTransformer(nn.Module):
             layer_attn_weights.append(attn_weights)
         x = self.linear_layer(x[:, 0, :])
         logits = self.logsoftmax(x)
-        return logits, labels, torch.stack(layer_attn_weights), tokenized_batch['first_ex']
+        return logits, labels, torch.stack(layer_attn_weights)
 
     def calculate_loss(self, batch):
-        logits, labels, layer_attn_weights, first_ex = self.forward(batch)
+        logits, labels, layer_attn_weights = self.forward(batch)
         loss = self.loss_func(logits, labels)
-        return loss, layer_attn_weights, first_ex
+        return loss, layer_attn_weights
 
 class SingleHeadAttention(nn.Module):
     def __init__(self, input_dim, inner_dim, dropout=0.):
