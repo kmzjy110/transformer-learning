@@ -78,14 +78,15 @@ class Experiment:
     def __init__(
         self, embedding_dim, num_heads, num_layers, num_numbers,
         num_letters, num_test_data=2000, num_training_data=None, 
-        num_warump_steps=5000, number_symbolic_rep=False,
+        num_warmup_steps=5000, number_symbolic_rep=False,
         lr=1e-4, max_steps=200000, batch_size=32,
         model_seed=0, data_seed=0, all_experiment_folder='experiments',
         acc_change_vis_threshold=0.1, save_attn_every_num_steps=10000, 
         produce_plots=False, plot_attn_seq_len=10,
         save_model_every_num_steps = None
         ):
-        self.experiment_name = f'exp_num_letters={num_letters}_num_numbers={num_numbers}_embedding_dim={embedding_dim}_num_heads={num_heads}_num_layers={num_layers}_num_training_data={num_training_data}_number_symbolic_rep={number_symbolic_rep}_model_seed={model_seed}_data_seed={data_seed}_lr={lr}_batch_size={batch_size}_max_steps={max_steps}_num_warump_steps={num_warump_steps}'
+        self.experiment_name = f'exp_num_letters={num_letters}_num_numbers={num_numbers}_embedding_dim={embedding_dim}_num_heads={num_heads}_num_layers={num_layers}_num_training_data={num_training_data}_number_symbolic_rep={number_symbolic_rep}_model_seed={model_seed}_data_seed={data_seed}_lr={lr}_batch_size={batch_size}_max_steps={max_steps}_num_warmup_steps={num_warmup_steps}'
+        print(self.experiment_name)
         self.model_seed, self.data_seed = model_seed, data_seed
 
         if not os.path.exists(all_experiment_folder):
@@ -114,7 +115,7 @@ class Experiment:
             self.final_model = None
 
         # training parameters
-        self.num_warump_steps = num_warump_steps
+        self.num_warmup_steps = num_warmup_steps
         self.lr=lr
         self.max_steps = max_steps
         self.batch_size = batch_size
@@ -148,7 +149,7 @@ class Experiment:
             'num_layers': self.num_layers,
             'embedding_dim': self.embedding_dim,
             'number_symbolic_rep': self.number_symbolic_rep,
-            'num_warump_steps': self.num_warump_steps,
+            'num_warmup_steps': self.num_warmup_steps,
             'lr': self.lr,
             'batch_size': self.batch_size,
             'num_training_data': self.num_training_data,
@@ -175,19 +176,30 @@ class Experiment:
         data_batch = [d for d in data_batch if str(d['input_seq']) not in self.forbidden_input_seqs]
         return tokenize_batch(data_batch, self.tokenizer)
 
-    def train(self, batch_size, eval_every=500, start_idx=0, optimizer=None, lr_scheduler=None, model_save_dir=None, model_load_dir=None):
-        print('Training...')
+    def get_model_file_name(self, step_idx):
+        return 'training_step_' + str(step_idx) + '.pt'
 
+    def train(self, batch_size, eval_every=500, start_idx=0, optimizer=None, lr_scheduler=None, model_save_dir=None, model_load_dir=None,
+              stop_in_num_steps=None, new_data_seed=None, start_saving_model_idx=None):
+        print('Training...')
+        if new_data_seed:
+            print("sampling from new data seed:", new_data_seed)
+            np.random.seed(new_data_seed)
+            if self.num_training_data is not None:
+                self.training_seeds = sample_seeds(
+                    self.num_training_data // batch_size)  # np.random.randint(0, 2**32 - 1, size=)
+            else:
+                self.training_seeds = sample_seeds(self.max_steps)  # np.random.randint(0, 2**32 - 1, size=max_steps)
         # adding optimizer here
         if optimizer is not None:
             self.optimizer = optimizer
             self.lr_scheduler = lr_scheduler
         else:
             self.optimizer = AdamW(self.model.parameters(), lr=self.lr)
-            self.lr_scheduler = get_linear_schedule_with_warmup(self.optimizer, num_warmup_steps=self.num_warump_steps, num_training_steps=self.max_steps)
+            self.lr_scheduler = get_linear_schedule_with_warmup(self.optimizer, num_warmup_steps=self.num_warmup_steps, num_training_steps=self.max_steps)
 
         if start_idx:
-            model_file_name ='training_step_' + str(start_idx) + '.pt'
+            model_file_name = self.get_model_file_name(start_idx)
 
             if model_load_dir:
                 load_dir =os.path.join(self.experiment_dir, model_load_dir, model_file_name)
@@ -210,27 +222,91 @@ class Experiment:
         # this part of the training is pretty much the same
         prev_acc, plots_to_save, rolling_plots, acc_one_saved = 0, [], [], False
 
+        def new_folder_name():
+            return f'start_{start_idx}_stop_{start_idx+stop_in_num_steps}_seed_{new_data_seed}/'
+            # return 'test500_500_newseed/'
         for step_idx in pbar:
 
 
-            # eval code in front for save and load code consistency
-            if step_idx % eval_every == 0:
+            if self.save_model_every_num_steps:
+                self.model.eval()
+                if not start_saving_model_idx or (start_saving_model_idx and step_idx>start_saving_model_idx):
+
+                    if step_idx % self.save_model_every_num_steps == 0:
+                        states = {
+                            "step":step_idx,
+                            "model_state_dict": self.model.state_dict(),
+                            "optimizer_state_dict": self.optimizer.state_dict(),
+                            "lr_scheduler_state_dict": self.lr_scheduler.state_dict()
+                        }
+                        model_file_name = self.get_model_file_name(step_idx)
+                        if model_save_dir:
+                            save_dir = os.path.join(self.experiment_dir, model_save_dir)
+
+                        else:
+                            if stop_in_num_steps is not None:
+                                save_dir = os.path.join(self.experiment_dir, new_folder_name())
+                            else:
+
+                                save_dir= self.experiment_dir
+
+                        if not os.path.exists(save_dir):
+                            os.mkdir(save_dir)
+                        save_dir = os.path.join(save_dir, model_file_name)
+                        torch.save(states, save_dir)
+                        print('model saved: ',save_dir)
+            if stop_in_num_steps and step_idx-start_idx == stop_in_num_steps + 1:
+                break
+
+            # get batch based on the seed
+
+            training_seed = self.training_seeds[step_idx % len(self.training_seeds)]
+            batch = self.get_batches(batch_size, training_seed)
+
+            # train
+            loss, layer_attn_weights = self.model.calculate_loss(batch)
+            loss.backward()
+            self.optimizer.step()
+            self.lr_scheduler.step()
+            self.optimizer.zero_grad()
+
+            # update moving average
+            if step_idx == 0:
+                loss_moving_avg = loss.item()
+            else:
+                loss_moving_avg = 0.99 * loss_moving_avg + 0.01 * loss.item()
+            pbar.set_description(f'loss: {loss_moving_avg:.3f}')
+
+            if step_idx % eval_every == 0 or (stop_in_num_steps is not None and step_idx-start_idx == stop_in_num_steps + 1):
+                self.model.eval()
                 eval_result = evaluate_model_on_data(self.model, self.tokenizer, self.test_data)
                 eval_result['step'] = step_idx
                 eval_result['training_loss'] = float(loss_moving_avg)
 
                 if self.final_model is not None:
+                    print("linear connectivity")
                     average_model = get_averaged_model(self.model, self.final_model)
                     lc_result = evaluate_model_on_data(average_model, self.tokenizer, self.test_data)
                     for k in lc_result:
                         eval_result[f'linear_connectivity_{k}'] = lc_result[k]
 
+                eval_result['training_seed'] = training_seed
+                # eval_result['lr'] = self.lr_scheduler.get_last_lr()
+                # eval_result['batch'] = batch['idxes'].detach().cpu().numpy().tolist()[0][2]
+
                 eval_results.append(eval_result)
                 acc = eval_result['acc']
+                if stop_in_num_steps is not None:
+                    if not os.path.exists(os.path.join(self.experiment_dir, new_folder_name())):
+                        os.mkdir(os.path.join(self.experiment_dir, new_folder_name()))
 
-                with open(self.eval_results_path, 'a') as f:
-                    f.write(json.dumps(eval_result) + '\n')
-                print(self.experiment_name, f'Step {step_idx}: accuracy: {acc:.3f}')
+                    with open(os.path.join(self.experiment_dir, new_folder_name(), new_folder_name()[:-1]+"_eval_results.jsonl"), 'a') as f:
+                        f.write(json.dumps(eval_result) + '\n')
+                    print(self.experiment_name, f'Step {step_idx}: accuracy: {acc:.3f}')
+                else:
+                    with open(self.eval_results_path, 'a') as f:
+                        f.write(json.dumps(eval_result) + '\n')
+                    print(self.experiment_name, f'Step {step_idx}: accuracy: {acc:.3f}')
 
                 self.model.train()
 
@@ -261,42 +337,11 @@ class Experiment:
                         rolling_plots = rolling_plots[1:]
 
                     prev_acc = acc
-            if self.save_model_every_num_steps:
-                if step_idx % self.save_model_every_num_steps == 0:
-                    states = {
-                        "step":step_idx,
-                        "model_state_dict": self.model.state_dict(),
-                        "optimizer_state_dict": self.optimizer.state_dict(),
-                        "lr_scheduler_state_dict": self.lr_scheduler.state_dict()
-                    }
-                    model_file_name = 'training_step_' + str(step_idx) + '.pt'
-                    if model_save_dir:
-                        save_dir = os.path.join(self.experiment_dir, model_save_dir, model_file_name)
+                self.model.train()
 
-                    else:
-                        save_dir = os.path.join(self.experiment_dir, model_file_name)
 
-                    torch.save(states, save_dir)
-                    print('model saved: ',save_dir)
-
-            # get batch based on the seed
-            training_seed = self.training_seeds[step_idx % len(self.training_seeds)]
-            batch = self.get_batches(batch_size, training_seed)
-
-            # train
-            loss, layer_attn_weights = self.model.calculate_loss(batch)
-            loss.backward()
-            self.optimizer.step()
-            self.lr_scheduler.step()
-            self.optimizer.zero_grad()
-
-            # update moving average
-            if step_idx == 0:
-                loss_moving_avg = loss.item()
-            else:
-                loss_moving_avg = 0.99 * loss_moving_avg + 0.01 * loss.item()
-            pbar.set_description(f'loss: {loss_moving_avg:.3f}')
         torch.save(self.model.state_dict(), os.path.join(self.experiment_dir, 'final_model.pt'))
+
 
     def gen_sns_plots(self, layer_attn_weights, title_prefix=None):
         plot_title=""
@@ -390,14 +435,16 @@ if __name__ == '__main__':
     parser.add_argument('--model_seed', type=int, default=0)
     parser.add_argument('--all_experiment_folder', type=str, default='experiments')
     parser.add_argument('--batch_size', type=int, default=32)
-
+    parser.add_argument('--start_idx', type=int, default=None)
+    parser.add_argument('--new_data_seed', type=int, default=None)
     args = parser.parse_args()
-
+    print("model seed", args.model_seed)
+    print("data seed", args.data_seed)
     experiment = Experiment(embedding_dim=args.embedding_dim, num_heads=args.num_heads,
                             num_layers=args.num_layers, num_numbers=26, num_letters=26,
                             num_training_data=args.num_training_data, number_symbolic_rep=True,
-                            data_seed=args.data_seed, save_model_every_num_steps=500, model_seed=args.model_seed,
+                            data_seed=args.data_seed, save_model_every_num_steps=5000, model_seed=args.model_seed,
                             all_experiment_folder=args.all_experiment_folder, max_steps=args.num_steps,
                             produce_plots=False
                             )
-    experiment.train(batch_size=args.batch_size)
+    experiment.train(batch_size=args.batch_size, start_idx=args.start_idx, eval_every=500, start_saving_model_idx=None, new_data_seed=args.new_data_seed)
