@@ -57,14 +57,15 @@ def evaluate_model_on_data(model, tokenizer, test_data, num_data_to_plot_attenti
 
 
 def get_averaged_model(model_1, model_2):
-    avg_model = model_1.copy_self()
-    avg_model_state_dict = avg_model.state_dict()
-    model_1_state_dict = model_1.state_dict()
-    model_2_state_dict = model_2.state_dict()
-    for key in avg_model_state_dict.keys():
-        avg_model_state_dict[key] = (model_1_state_dict[key] + model_2_state_dict[key]) / 2
-    avg_model.load_state_dict(avg_model_state_dict)
-    return avg_model
+    with torch.no_grad():
+        avg_model = model_1.copy_self()
+        avg_model_state_dict = avg_model.state_dict()
+        model_1_state_dict = model_1.state_dict().clone()
+        model_2_state_dict = model_2.state_dict().clone()
+        for key in avg_model_state_dict.keys():
+            avg_model_state_dict[key] = (model_1_state_dict[key] + model_2_state_dict[key]) / 2
+        avg_model.load_state_dict(avg_model_state_dict)
+        return avg_model
 
 def sample_seeds(num_samples):
     xs = set()
@@ -179,6 +180,27 @@ class Experiment:
     def get_model_file_name(self, step_idx):
         return 'training_step_' + str(step_idx) + '.pt'
 
+    def get_model_diff(self, model1_state_dict, model2_state_dict):
+        if not model1_state_dict and not model2_state_dict:
+            return 0
+        with torch.no_grad():
+            l2_norm = 0
+
+            for key in model1_state_dict.keys():
+                l2_norm += torch.linalg.norm(torch.tensor(model1_state_dict[key]).cpu() - torch.tensor(model2_state_dict[key]).cpu()) ** 2
+
+            return l2_norm.detach().cpu().numpy()
+
+    def get_optimizer_diff(self, model1_dict, model2_dict):
+        if type(model1_dict) != dict and type(model2_dict) != dict:
+            return torch.linalg.norm(model1_dict.cpu() - model2_dict.cpu()) ** 2
+        else:
+            current_diff = 0
+            for key in model1_dict.keys():
+                current_diff += self.get_model_diff(model1_dict[key], model2_dict[key])
+
+            return current_diff
+
     def train(self, batch_size, eval_every=500, start_idx=0, optimizer=None, lr_scheduler=None, model_save_dir=None, model_load_dir=None,
               stop_in_num_steps=None, new_data_seed=None, start_saving_model_idx=None):
         print('Training...')
@@ -227,9 +249,8 @@ class Experiment:
             # return 'test500_500_newseed/'
         for step_idx in pbar:
 
-
+            self.model.train()
             if self.save_model_every_num_steps:
-                self.model.eval()
                 if not start_saving_model_idx or (start_saving_model_idx and step_idx>start_saving_model_idx):
 
                     if step_idx % self.save_model_every_num_steps == 0:
@@ -237,7 +258,10 @@ class Experiment:
                             "step":step_idx,
                             "model_state_dict": self.model.state_dict(),
                             "optimizer_state_dict": self.optimizer.state_dict(),
-                            "lr_scheduler_state_dict": self.lr_scheduler.state_dict()
+                            "lr_scheduler_state_dict": self.lr_scheduler.state_dict(),
+                            # "training_seed": self.training_seeds[step_idx % len(self.training_seeds)]+1,
+                            # "current_batch": self.get_batches(batch_size, self.training_seeds[step_idx % len(self.training_seeds)]),
+                            # "loss": self.model.calculate_loss(self.get_batches(batch_size, self.training_seeds[step_idx % len(self.training_seeds)]))[0].item()
                         }
                         model_file_name = self.get_model_file_name(step_idx)
                         if model_save_dir:
@@ -259,7 +283,7 @@ class Experiment:
                 break
 
             # get batch based on the seed
-
+            self.model.train()
             training_seed = self.training_seeds[step_idx % len(self.training_seeds)]
             batch = self.get_batches(batch_size, training_seed)
 
@@ -285,7 +309,7 @@ class Experiment:
 
                 if self.final_model is not None:
                     print("linear connectivity")
-                    average_model = get_averaged_model(self.model, self.final_model)
+                    average_model = get_averaged_model(self.final_model, self.model)
                     lc_result = evaluate_model_on_data(average_model, self.tokenizer, self.test_data)
                     for k in lc_result:
                         eval_result[f'linear_connectivity_{k}'] = lc_result[k]
@@ -394,32 +418,7 @@ class Experiment:
             for plot in plots_to_save:
                 pp.savefig(plot.figure)
         print("Saved plots:" + pdf_path)
-    def evaluate(self, model=None):
-        bsize = 32
-        labels, preds, losses = [], [], []
-        if model is None:
-            model = self.model
-        model.eval()
-        with torch.no_grad():
-            for batch_idx in range((len(self.test_data) - 1) // bsize + 1):
-                data_batch = self.test_data[batch_idx * bsize: (batch_idx + 1) * bsize]
-                batch = tokenize_batch(data_batch, self.tokenizer)
-                logits, _, _, _ = model.forward(batch)
 
-                losses.extend([-logit[label].cpu().numpy() for logit, label in zip(logits, batch['labels'])])
-
-                preds.extend(logits.argmax(dim=1).cpu().numpy().tolist())
-                labels.extend(batch['labels'].cpu().numpy().tolist())
-        
-            _, _, attention, _ = model.forward(self.data_to_plot_attention)
-
-        return {
-            'acc': float(np.mean(np.array(preds) == np.array(labels))),
-            'loss': float(np.mean(losses)),
-            'preds': preds,
-            'labels': labels,
-            'attention': attention.cpu().detach().numpy()
-        }
 
 if __name__ == '__main__':
     parser = ArgumentParser()
@@ -435,7 +434,7 @@ if __name__ == '__main__':
     parser.add_argument('--model_seed', type=int, default=0)
     parser.add_argument('--all_experiment_folder', type=str, default='experiments')
     parser.add_argument('--batch_size', type=int, default=32)
-    parser.add_argument('--start_idx', type=int, default=None)
+    parser.add_argument('--start_idx', type=int, default=0)
     parser.add_argument('--new_data_seed', type=int, default=None)
     args = parser.parse_args()
     print("model seed", args.model_seed)
