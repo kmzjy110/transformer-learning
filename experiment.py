@@ -16,9 +16,9 @@ import seaborn as sns
 import matplotlib.pyplot as plt
 from collections import defaultdict
 from torch import linalg as LA
-
+import copy
+import collections
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
-
 
 def model_l2_norm(model):
     with torch.no_grad():
@@ -59,11 +59,13 @@ def evaluate_model_on_data(model, tokenizer, test_data, num_data_to_plot_attenti
 def get_averaged_model(model_1, model_2):
     with torch.no_grad():
         avg_model = model_1.copy_self()
-        avg_model_state_dict = avg_model.state_dict()
-        model_1_state_dict = model_1.state_dict().clone()
-        model_2_state_dict = model_2.state_dict().clone()
+        avg_model_state_dict = copy.deepcopy(avg_model.state_dict())
+
+        model_1_state_dict = copy.deepcopy(model_1.state_dict())
+
+        model_2_state_dict = copy.deepcopy(model_2.state_dict())
         for key in avg_model_state_dict.keys():
-            avg_model_state_dict[key] = (model_1_state_dict[key] + model_2_state_dict[key]) / 2
+            avg_model_state_dict[key] = (model_1_state_dict[key].detach().cpu() + model_2_state_dict[key].detach().cpu()) / 2
         avg_model.load_state_dict(avg_model_state_dict)
         return avg_model
 
@@ -86,7 +88,7 @@ class Experiment:
         produce_plots=False, plot_attn_seq_len=10,
         save_model_every_num_steps = None
         ):
-        self.experiment_name = f'exp_num_letters={num_letters}_num_numbers={num_numbers}_embedding_dim={embedding_dim}_num_heads={num_heads}_num_layers={num_layers}_num_training_data={num_training_data}_number_symbolic_rep={number_symbolic_rep}_model_seed={model_seed}_data_seed={data_seed}_lr={lr}_batch_size={batch_size}_max_steps={max_steps}_num_warmup_steps={num_warmup_steps}'
+        self.experiment_name = f'exp_num_letters={num_letters}_num_numbers={num_numbers}_embedding_dim={embedding_dim}_num_heads={num_heads}_num_layers={num_layers}_num_training_data={num_training_data}_number_symbolic_rep={number_symbolic_rep}_model_seed={model_seed}_data_seed={data_seed}_lr={lr}_batch_size={batch_size}_max_steps={max_steps}_num_warmup_steps={num_warmup_steps}_test'
         print(self.experiment_name)
         self.model_seed, self.data_seed = model_seed, data_seed
 
@@ -108,12 +110,12 @@ class Experiment:
         self.tokenizer = Tokenizer(num_numbers, num_letters, number_symbolic_rep)
         self.model = SimpleTransformer(len(self.tokenizer.table), num_letters, embedding_dim, num_heads, num_layers, seed=self.model_seed).to(device)
         final_model_path = os.path.join(self.experiment_dir, 'final_model.pt')
-        if os.path.exists(final_model_path):
-            print('loading final model from path ', final_model_path, '...')
-            self.final_model = self.model.copy_self()
-            self.final_model.load_state_dict(torch.load(final_model_path))
-        else:
-            self.final_model = None
+        # if os.path.exists(final_model_path):
+        #     print('loading final model from path ', final_model_path, '...')
+        #     self.final_model = self.model.copy_self()
+        #     self.final_model.load_state_dict(torch.load(final_model_path))
+        # else:
+        #     self.final_model = None
 
         # training parameters
         self.num_warmup_steps = num_warmup_steps
@@ -180,27 +182,6 @@ class Experiment:
     def get_model_file_name(self, step_idx):
         return 'training_step_' + str(step_idx) + '.pt'
 
-    def get_model_diff(self, model1_state_dict, model2_state_dict):
-        if not model1_state_dict and not model2_state_dict:
-            return 0
-        with torch.no_grad():
-            l2_norm = 0
-
-            for key in model1_state_dict.keys():
-                l2_norm += torch.linalg.norm(torch.tensor(model1_state_dict[key]).cpu() - torch.tensor(model2_state_dict[key]).cpu()) ** 2
-
-            return l2_norm.detach().cpu().numpy()
-
-    def get_optimizer_diff(self, model1_dict, model2_dict):
-        if type(model1_dict) != dict and type(model2_dict) != dict:
-            return torch.linalg.norm(model1_dict.cpu() - model2_dict.cpu()) ** 2
-        else:
-            current_diff = 0
-            for key in model1_dict.keys():
-                current_diff += self.get_model_diff(model1_dict[key], model2_dict[key])
-
-            return current_diff
-
     def train(self, batch_size, eval_every=500, start_idx=0, optimizer=None, lr_scheduler=None, model_save_dir=None, model_load_dir=None,
               stop_in_num_steps=None, new_data_seed=None, start_saving_model_idx=None):
         print('Training...')
@@ -259,7 +240,7 @@ class Experiment:
                             "model_state_dict": self.model.state_dict(),
                             "optimizer_state_dict": self.optimizer.state_dict(),
                             "lr_scheduler_state_dict": self.lr_scheduler.state_dict(),
-                            # "training_seed": self.training_seeds[step_idx % len(self.training_seeds)]+1,
+                            "training_seed": self.training_seeds[step_idx % len(self.training_seeds)]+1,
                             # "current_batch": self.get_batches(batch_size, self.training_seeds[step_idx % len(self.training_seeds)]),
                             # "loss": self.model.calculate_loss(self.get_batches(batch_size, self.training_seeds[step_idx % len(self.training_seeds)]))[0].item()
                         }
@@ -307,12 +288,13 @@ class Experiment:
                 eval_result['step'] = step_idx
                 eval_result['training_loss'] = float(loss_moving_avg)
 
-                if self.final_model is not None:
-                    print("linear connectivity")
-                    average_model = get_averaged_model(self.final_model, self.model)
-                    lc_result = evaluate_model_on_data(average_model, self.tokenizer, self.test_data)
-                    for k in lc_result:
-                        eval_result[f'linear_connectivity_{k}'] = lc_result[k]
+                #THIS CODE IS CAUSING TROUBLE
+                # if self.final_model is not None:
+                #     print("linear connectivity")
+                #     average_model = get_averaged_model(self.final_model, self.model)
+                #     lc_result = evaluate_model_on_data(average_model, self.tokenizer, self.test_data)
+                #     for k in lc_result:
+                #         eval_result[f'linear_connectivity_{k}'] = lc_result[k]
 
                 eval_result['training_seed'] = training_seed
                 # eval_result['lr'] = self.lr_scheduler.get_last_lr()
@@ -430,8 +412,8 @@ if __name__ == '__main__':
     parser.add_argument('--num_training_data', type=int, default=None)
     parser.add_argument('--num_steps', type=int, default=2000000)
     parser.add_argument('--number_symbolic_rep', action='store_true')
-    parser.add_argument('--data_seed', type=int, default=0)
-    parser.add_argument('--model_seed', type=int, default=0)
+    parser.add_argument('--data_seed', type=int, default=11)
+    parser.add_argument('--model_seed', type=int, default=12)
     parser.add_argument('--all_experiment_folder', type=str, default='experiments')
     parser.add_argument('--batch_size', type=int, default=32)
     parser.add_argument('--start_idx', type=int, default=0)
@@ -442,8 +424,10 @@ if __name__ == '__main__':
     experiment = Experiment(embedding_dim=args.embedding_dim, num_heads=args.num_heads,
                             num_layers=args.num_layers, num_numbers=26, num_letters=26,
                             num_training_data=args.num_training_data, number_symbolic_rep=True,
-                            data_seed=args.data_seed, save_model_every_num_steps=5000, model_seed=args.model_seed,
+                            data_seed=args.data_seed, save_model_every_num_steps=500, model_seed=args.model_seed,
                             all_experiment_folder=args.all_experiment_folder, max_steps=args.num_steps,
                             produce_plots=False
                             )
-    experiment.train(batch_size=args.batch_size, start_idx=args.start_idx, eval_every=500, start_saving_model_idx=None, new_data_seed=args.new_data_seed)
+
+
+    experiment.train(batch_size=args.batch_size, start_idx=args.start_idx, eval_every=500, start_saving_model_idx=None, new_data_seed=args.new_data_seed, stop_in_num_steps=1500-args.start_idx)
