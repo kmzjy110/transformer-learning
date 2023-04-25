@@ -88,7 +88,7 @@ class Experiment:
         produce_plots=False, plot_attn_seq_len=10,
         save_model_every_num_steps = None
         ):
-        self.experiment_name = f'exp_num_letters={num_letters}_num_numbers={num_numbers}_embedding_dim={embedding_dim}_num_heads={num_heads}_num_layers={num_layers}_num_training_data={num_training_data}_number_symbolic_rep={number_symbolic_rep}_model_seed={model_seed}_data_seed={data_seed}_lr={lr}_batch_size={batch_size}_max_steps={max_steps}_num_warmup_steps={num_warmup_steps}_test'
+        self.experiment_name = f'exp_num_letters={num_letters}_num_numbers={num_numbers}_embedding_dim={embedding_dim}_num_heads={num_heads}_num_layers={num_layers}_num_training_data={num_training_data}_number_symbolic_rep={number_symbolic_rep}_model_seed={model_seed}_data_seed={data_seed}_lr={lr}_batch_size={batch_size}_max_steps={max_steps}_num_warmup_steps={num_warmup_steps}'
         print(self.experiment_name)
         self.model_seed, self.data_seed = model_seed, data_seed
 
@@ -183,7 +183,7 @@ class Experiment:
         return 'training_step_' + str(step_idx) + '.pt'
 
     def train(self, batch_size, eval_every=500, start_idx=0, optimizer=None, lr_scheduler=None, model_save_dir=None, model_load_dir=None,
-              stop_in_num_steps=None, new_data_seed=None, start_saving_model_idx=None):
+              stop_in_num_steps=None, new_data_seed=None, start_saving_model_idx=None, second_data_seed=None, resample_at_step=None):
         print('Training...')
         if new_data_seed:
             print("sampling from new data seed:", new_data_seed)
@@ -224,13 +224,26 @@ class Experiment:
 
         # this part of the training is pretty much the same
         prev_acc, plots_to_save, rolling_plots, acc_one_saved = 0, [], [], False
-
+        current_train_idx = start_idx
         def new_folder_name():
-            return f'start_{start_idx}_stop_{start_idx+stop_in_num_steps}_seed_{new_data_seed}/'
+            if resample_at_step:
+                return f'start_{start_idx}_stop_{start_idx+stop_in_num_steps}_seed_{new_data_seed}_resample_{resample_at_step}_newseed_{second_data_seed}/'
+            else:
+                return f'start_{start_idx}_stop_{start_idx+stop_in_num_steps}_seed_{new_data_seed}/'
             # return 'test500_500_newseed/'
         for step_idx in pbar:
-
             self.model.train()
+            if resample_at_step and current_train_idx==resample_at_step:
+                print("Resampling from second new data seed: ", second_data_seed)
+                print("STEP:", step_idx)
+                print("CURRENT TRAIN IDX", current_train_idx)
+                np.random.seed(second_data_seed)
+                if self.num_training_data is not None:
+                    self.training_seeds = sample_seeds(
+                        self.num_training_data // batch_size)  # np.random.randint(0, 2**32 - 1, size=)
+                else:
+                    self.training_seeds = sample_seeds(
+                        self.max_steps)  # np.random.randint(0, 2**32 - 1, size=max_steps)
             if self.save_model_every_num_steps:
                 if not start_saving_model_idx or (start_saving_model_idx and step_idx>start_saving_model_idx):
 
@@ -308,6 +321,9 @@ class Experiment:
 
                     with open(os.path.join(self.experiment_dir, new_folder_name(), new_folder_name()[:-1]+"_eval_results.jsonl"), 'a') as f:
                         f.write(json.dumps(eval_result) + '\n')
+
+                    with open(os.path.join("experiments/", f'model_head_{self.num_heads}_layer_{self.num_layers}_modelseed_{self.model_seed}_dataseed_{self.data_seed}_{new_folder_name()[:-1]}_eval_results.jsonl'), 'a') as f:
+                        f.write(json.dumps(eval_result) + '\n')
                     print(self.experiment_name, f'Step {step_idx}: accuracy: {acc:.3f}')
                 else:
                     with open(self.eval_results_path, 'a') as f:
@@ -345,9 +361,20 @@ class Experiment:
                     prev_acc = acc
                 self.model.train()
 
-
+            current_train_idx +=1
         torch.save(self.model.state_dict(), os.path.join(self.experiment_dir, 'final_model.pt'))
 
+    def gen_plots(self, model_path=None, plot_title_prefix="", pdf_path=""):
+        if model_path:
+            print("model loaded:", model_path)
+            states = torch.load(model_path)
+            self.model.load_state_dict(states["model_state_dict"])
+        self.model.eval()
+        with torch.no_grad():
+            plot_batch = tokenize_batch(self.plot_data, self.tokenizer)
+            _, _, layer_attn_weights = self.model.forward(plot_batch)
+            figs, axs = self.gen_sns_plots(layer_attn_weights, plot_title_prefix)
+            self.save_plots([axs[0]], pdf_path=pdf_path)
 
     def gen_sns_plots(self, layer_attn_weights, title_prefix=None):
         plot_title=""
@@ -391,10 +418,11 @@ class Experiment:
             # current_plots.append(axs[0][0])
         return fig, axs
 
-    def save_plots(self, plots_to_save, special_plot_filename=None):
+    def save_plots(self, plots_to_save, special_plot_filename=None, pdf_path=None):
         if special_plot_filename is None:
             special_plot_filename = "plots"
-        pdf_path = os.path.join(self.experiment_dir, special_plot_filename + ".pdf")
+        if pdf_path is None:
+            pdf_path = os.path.join(self.experiment_dir, special_plot_filename + ".pdf")
         with PdfPages(pdf_path) as pp:
 
             for plot in plots_to_save:
@@ -419,15 +447,32 @@ if __name__ == '__main__':
     parser.add_argument('--start_idx', type=int, default=0)
     parser.add_argument('--new_data_seed', type=int, default=None)
     args = parser.parse_args()
-    print("model seed", args.model_seed)
-    print("data seed", args.data_seed)
+
     experiment = Experiment(embedding_dim=args.embedding_dim, num_heads=args.num_heads,
                             num_layers=args.num_layers, num_numbers=26, num_letters=26,
                             num_training_data=args.num_training_data, number_symbolic_rep=True,
-                            data_seed=args.data_seed, save_model_every_num_steps=500, model_seed=args.model_seed,
+                            data_seed=11, save_model_every_num_steps=1, model_seed=12,
                             all_experiment_folder=args.all_experiment_folder, max_steps=args.num_steps,
-                            produce_plots=False
+                            produce_plots=True, save_attn_every_num_steps=100
                             )
 
 
-    experiment.train(batch_size=args.batch_size, start_idx=args.start_idx, eval_every=500, start_saving_model_idx=None, new_data_seed=args.new_data_seed, stop_in_num_steps=1500-args.start_idx)
+    experiment.train(batch_size=args.batch_size, start_idx=2400, eval_every=1, start_saving_model_idx=None, new_data_seed=11, stop_in_num_steps=20)
+
+    # experiment.gen_plots("experiments/exp_num_letters=26_num_numbers=26_embedding_dim=512_num_heads=1_num_layers=2_num_training_data=None_number_symbolic_rep=True_model_seed=12_data_seed=11_lr=0.0001_batch_size=32_max_steps=2000000_num_warmup_steps=5000/training_step_300000.pt",
+    #                      "modelseed 12 dataseed 11 ", "model_12_seed_11_attention_plots.pdf")
+    # experiment.gen_plots(
+    #     "experiments/"
+    #     "exp_num_letters=26_num_numbers=26_embedding_dim=512_num_heads=1_num_layers=2_num_training_data=None_number_symbolic_rep=True_model_seed=25_data_seed=11_lr=0.0001_batch_size=32_max_steps=2000000_num_warmup_steps=5000/start_0_stop_1000000_seed_11/training_step_995000.pt",
+    #     "modelseed 25 dataseed 11 ", "model_25_seed_11_attention_plots.pdf")
+    #
+    # experiment.gen_plots(
+    #     "experiments/"
+    #     "exp_num_letters=26_num_numbers=26_embedding_dim=512_num_heads=1_num_layers=2_num_training_data=None_number_symbolic_rep=True_model_seed=34_data_seed=11_lr=0.0001_batch_size=32_max_steps=2000000_num_warmup_steps=5000/start_0_stop_1000000_seed_11/training_step_995000.pt",
+    #     "modelseed 34 dataseed 11 ", "model_34_seed_11_attention_plots.pdf")
+    #
+    # experiment.gen_plots(
+    #     "experiments/"
+    #     "exp_num_letters=26_num_numbers=26_embedding_dim=512_num_heads=1_num_layers=2_num_training_data=None_number_symbolic_rep=True_model_seed=38_data_seed=12_lr=0.0001_batch_size=32_max_steps=2000000_num_warmup_steps=5000/start_0_stop_1000000_seed_12/training_step_995000.pt",
+    #     "modelseed 38 dataseed 12 ", "model_38_seed_12_attention_plots.pdf")
+
